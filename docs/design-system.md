@@ -1,7 +1,7 @@
 # Design System: YouTube 번역 자막 앱
 
 > shadcn/ui Luma 프리셋 기반 | 다크 모드 우선 | 시네마 UX
-> 디자인 인터뷰: 7라운드, 모호성 19%
+> 디자인 인터뷰: 16라운드, 모호성 8%
 
 ---
 
@@ -10,11 +10,19 @@
 | 결정 | 선택 | 이유 |
 |------|------|------|
 | 디자인 프리셋 | shadcn/ui Luma (Neutral OKLCH) | 무채색 팔레트가 영상 콘텐츠를 돋보이게 함 |
-| 레이아웃 | 시네마 싱글 컬럼 | 영상이 전체 너비 차지, 자막은 영상 아래 전용 영역 |
+| 레이아웃 | 2-View (Home + Player) | Home: URL 입력만 / Player: 영상+자막 오버레이. 깔끔한 분리 |
+| 자막 위치 | **영상 위 오버레이** (컨트롤 바로 위) | 넷플릭스 스타일, 영상과 자막이 하나의 경험 |
+| 자막 배경 | 반투명 검정 박스 (rgba(0,0,0,0.75)) | 밝은 영상에서도 가독성 보장 |
 | 자막 표시 | 번역만 기본, 원문은 토글(T키) | 미니멀한 시청 경험, 필요 시 원문 확인 |
+| 원문 토글 스타일 | 번역 아래 작게 (14px, 회색) | 번역이 주역, 원문은 보조 |
 | 빈 상태 | URL 입력만 (로고/브랜딩 없음) | 최대한 깨끗하게, 행동 유도에 집중 |
-| 키보드 단축키 | T(원문 토글), +/-(자막 크기), Space(재생) | POC 기본 세트 |
-| YouTube 플레이어 | Phase 0에서 lite-youtube vs 직접 iframe 둘 다 테스트 | 초기 로딩 성능 vs Player API 안정성 비교 검증 |
+| 뷰 전환 | Fade (200ms out → 300ms in) | 부드럽지만 단순 |
+| 라우팅 | **Tanstack Router** | 타입 안전한 경로 파라미터, TypeScript 친화 |
+| 풀스크린 | **Tauri 윈도우 풀스크린** | YouTube iframe 풀스크린은 자막 오버레이를 가림 → Tauri API로 대체 |
+| 진행률 표시 | 영상 아래 2px 얇은 바 | 최소한의 존재감 |
+| 페이지 복귀 | 뒤로가기 버튼 (←) | Player 상단 구석에 작은 버튼 |
+| 키보드 단축키 | T(원문), +/-(크기), Space(재생), F(풀스크린) | POC 기본 세트 |
+| YouTube 플레이어 | Phase 0에서 lite-youtube vs 직접 iframe 테스트 | 초기 로딩 성능 vs Player API 안정성 비교 검증 |
 | 환경 검증 UX | 모달 다이얼로그 (앱 차단) | Claude CLI 미설치 시 설치 가이드를 명확히 안내 |
 | 한글 폰트 | Pretendard | Inter와 메트릭 호환, 한글 최적화 |
 
@@ -37,13 +45,13 @@
 
 ### 차별화 포인트
 
-> "자막이 영상 위에 떠다니는 게 아니라, 영상 아래 전용 스테이지에서 공연한다"
+> "자막이 영상 아래 별도 스테이지가 아니라, 영상 위에 자연스럽게 녹아드는 오버레이다"
 
-대부분의 자막 앱은 영상 위에 텍스트를 오버레이한다. 이 앱은 **자막 전용 영역**을 영상 아래에 배치한다:
-- YouTube 자체 UI/자막과 충돌하지 않음
-- 배경이 통제되어 가독성 보장
+이 앱은 넷플릭스/유튜브 스타일의 **자막 오버레이**를 구현한다. 영상 위, YouTube 컨트롤 바 바로 위에 반투명 박스로 자막이 표시된다:
+- 영상과 자막이 하나의 시청 경험으로 통합됨
+- 반투명 검정 박스(rgba(0,0,0,0.75))로 밝은 영상에서도 가독성 보장
+- Tauri 풀스크린 전환 시에도 오버레이가 그대로 유지됨
 - 원문 + 번역을 동시에 보여줄 수 있음
-- 번역 상태 표시를 자연스럽게 통합
 
 ---
 
@@ -84,11 +92,11 @@
 
 ```css
 :root {
-  /* 자막 영역 */
-  --subtitle-bg: oklch(0.175 0 0);         /* 자막 패널 배경 */
-  --subtitle-text: oklch(0.98 0 0);        /* 번역 자막 텍스트 */
+  /* 자막 오버레이 */
+  --subtitle-bg: rgba(0, 0, 0, 0.75);      /* 자막 오버레이 배경 — 반투명 검정 */
+  --subtitle-text: oklch(0.98 0 0);        /* 번역 자막 텍스트 — 흰색 */
   --subtitle-original: oklch(0.556 0 0);   /* 원문 텍스트 (dimmed) */
-  --subtitle-border: oklch(1 0 0 / 6%);    /* 자막 영역 상단 구분선 */
+  --subtitle-border: oklch(1 0 0 / 6%);    /* 오버레이 테두리 */
 
   /* 번역 상태 */
   --progress-track: oklch(0.269 0 0);      /* 진행바 트랙 */
@@ -111,8 +119,8 @@
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
-  --subtitle-bg: oklch(0.97 0 0);
-  --subtitle-text: oklch(0.145 0 0);
+  --subtitle-bg: rgba(0, 0, 0, 0.75);     /* 오버레이는 라이트 모드에서도 동일 */
+  --subtitle-text: oklch(0.98 0 0);
   --subtitle-original: oklch(0.556 0 0);
 }
 ```
@@ -126,7 +134,7 @@
 | 용도 | 폰트 | 이유 |
 |------|------|------|
 | UI 텍스트 | **Pretendard** | Inter와 메트릭 호환, 한글 최적화 |
-| 번역 자막 | **Pretendard SemiBold** | 영상 아래에서 빠르게 읽혀야 하므로 약간 굵게 |
+| 번역 자막 | **Pretendard SemiBold** | 영상 위에서 빠르게 읽혀야 하므로 약간 굵게 |
 | 원문 자막 | **Pretendard Regular** | 번역보다 한 단계 가볍게 |
 | 모노스페이스 | **JetBrains Mono** | 타임코드, 디버그 정보 |
 
@@ -157,62 +165,24 @@
 
 ## 4. 레이아웃
 
-### 추천 레이아웃: "시네마 싱글 컬럼"
+### 2-View 아키텍처
 
-```
-┌──────────────────────────────────────────────────────┐
-│                                                      │
-│   ┌──────────────────────────────────────────────┐   │ ← URL Bar
-│   │  🔗  YouTube URL을 붙여넣으세요...            │   │    (auto-hide on play)
-│   └──────────────────────────────────────────────┘   │
-│                                                      │
-│   ┌──────────────────────────────────────────────┐   │
-│   │                                              │   │
-│   │                                              │   │
-│   │              YouTube Player                  │   │ ← 16:9 aspect ratio
-│   │              (iframe embed)                  │   │    fills available width
-│   │                                              │   │
-│   │                                              │   │
-│   └──────────────────────────────────────────────┘   │
-│                                                      │
-│   ┌──────────────────────────────────────────────┐   │ ← Subtitle Stage
-│   │                                              │   │
-│   │     여러분 안녕하세요, 오늘 강의에             │   │    translated (large, bright)
-│   │     오신 것을 환영합니다                       │   │
-│   │                                              │   │
-│   │     Hello everyone, welcome to               │   │    original (small, muted)
-│   │     today's lecture                           │   │
-│   │                                              │   │
-│   │  ═══════════════════════░░░░  80%  3/10 청크  │   │ ← progress (inline, subtle)
-│   └──────────────────────────────────────────────┘   │
-│                                                      │
-└──────────────────────────────────────────────────────┘
-```
+앱은 두 개의 분리된 뷰로 구성된다. Tanstack Router가 `/` → `/watch/$videoId` 라우팅을 담당한다.
 
-### 왜 이 레이아웃인가
+---
 
-| 대안 | 문제 | 이 레이아웃의 장점 |
-|------|------|-------------------|
-| 사이드바 + 콘텐츠 | 영상 면적 감소, POC에 불필요한 복잡도 | 영상이 전체 너비를 차지 |
-| 자막 오버레이 (플레이어 위) | YouTube 자체 자막/UI와 충돌 | 자막 전용 공간에서 충돌 없음 |
-| 하단 패널 분리 | 자막과 영상이 분리된 느낌 | 자막이 영상의 자연스러운 연장 |
+#### Home View (`/`)
 
-### 앱 상태별 레이아웃 변화
-
-#### State 1: 빈 상태 (앱 시작)
+URL 입력만 화면 중앙에 표시한다. 로고/브랜딩 없이 행동 유도에만 집중한다.
 
 ```
 ┌──────────────────────────────────────────────────┐
 │                                                  │
 │                                                  │
 │                                                  │
-│                                                  │
-│                                                  │
 │    ┌──────────────────────────────────────────┐   │
-│    │  🔗  YouTube URL을 붙여넣으세요...       │   │  ← 중앙 대형 URL 입력
+│    │  🔗  YouTube URL을 붙여넣으세요...       │   │
 │    └──────────────────────────────────────────┘   │
-│                                                  │
-│                                                  │
 │                                                  │
 │                                                  │
 └──────────────────────────────────────────────────┘
@@ -221,87 +191,128 @@
 - 브랜딩/로고 없이 URL 입력만 화면 중앙에 표시
 - 최대한 깨끗한 첫 화면, 행동 유도에만 집중
 - Cmd/Ctrl+V 붙여넣기 자동 감지
+- URL 입력 시 `/watch/$videoId`로 Fade 전환 (200ms out → 300ms in)
 
-#### State 2: 로딩 (자막 fetch + 번역 시작)
+---
+
+#### Player View (`/watch/$videoId`)
+
+뒤로가기 버튼(←) + 영상 + 자막 오버레이 + 2px progress bar로 구성된다. URL 바는 완전히 없다.
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  ┌────────────────────────────────────────────┐  │
-│  │ 🔗 https://youtube.com/watch?v=...    ✕   │  │  ← URL 상단으로 이동
-│  └────────────────────────────────────────────┘  │
+│ ←                                                │
 │                                                  │
+│  ┌────────────────────────────────────────────┐  │
+│  │                                            │  │
+│  │           YouTube Player                   │  │
+│  │                                            │  │
+│  │    ┌────────────────────────────────┐      │  │
+│  │    │ 여러분 안녕하세요, 오늘 강의에  │      │  │  ← 반투명 박스
+│  │    │ 오신 것을 환영합니다           │      │  │
+│  │    │                                │      │  │
+│  │    │ Hello everyone, welcome to     │      │  │  ← T키 토글 시
+│  │    │ today's lecture                │      │  │
+│  │    └────────────────────────────────┘      │  │
+│  │  ▄▄▄ ▶ 0:42 ━━━━━━━ 3:28  🔊              │  │
+│  └────────────────────────────────────────────┘  │
+│  ━━━━━━━━━━━━━━━━━━━━░░░░░░░░░░░░  80%          │  ← 2px progress
+└──────────────────────────────────────────────────┘
+```
+
+- 좌상단 ← 버튼으로 Home View로 복귀
+- SubtitleOverlay: YouTube 컨트롤 바로 위 (`bottom: ~60px`)에 반투명 박스로 표시
+- ProgressBar: 영상 컨테이너 바로 아래 2px 높이의 얇은 바
+
+---
+
+#### Player View — Tauri 풀스크린
+
+F키 또는 YouTube 풀스크린 버튼을 가로채서 Tauri `window.setFullscreen(true)` 호출. 자막 오버레이가 그대로 유지된다.
+
+```
+┌─── 전체 화면 ─────────────────────────────────────┐
+│                                                    │
+│  ┌──────────────────────────────────────────────┐  │
+│  │                                              │  │
+│  │              YouTube Player                  │  │
+│  │                                              │  │
+│  │     ┌──────────────────────────────────┐     │  │
+│  │     │ 여러분 안녕하세요               │     │  │
+│  │     └──────────────────────────────────┘     │  │
+│  │   ▄▄▄ ▶ 0:42 ━━━━━━━ 3:28  🔊               │  │
+│  └──────────────────────────────────────────────┘  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━░░░░░░░  80%           │
+└────────────────────────────────────────────────────┘
+```
+
+- YouTube iframe Fullscreen API는 사용하지 않음 (오버레이가 가려지기 때문)
+- Tauri 윈도우 자체를 풀스크린으로 전환 → 오버레이 레이어가 항상 영상 위에 유지됨
+
+---
+
+### 앱 상태별 레이아웃 변화
+
+#### State 1: 로딩 (자막 fetch + 번역 시작)
+
+Player View 진입 직후, 영상은 로드되고 자막 오버레이에 번역 진행 상태가 표시된다.
+
+```
+┌──────────────────────────────────────────────────┐
+│ ←                                                │
 │  ┌────────────────────────────────────────────┐  │
 │  │                                            │  │
 │  │         YouTube Player (loading)           │  │
 │  │                                            │  │
+│  │    ┌────────────────────────────────┐      │  │
+│  │    │  ◐  자막을 번역하고 있습니다...│      │  │  ← shimmer 효과
+│  │    │     영상 설명을 분석하는 중    │      │  │
+│  │    └────────────────────────────────┘      │  │
+│  │  ▄▄▄ ▶ 0:00 ━━━━━━━ 3:28  🔊              │  │
 │  └────────────────────────────────────────────┘  │
-│                                                  │
-│  ┌────────────────────────────────────────────┐  │
-│  │                                            │  │
-│  │    ◐  자막을 번역하고 있습니다...           │  │  ← 로딩 상태
-│  │       영상 설명을 분석하는 중               │  │
-│  │                                            │  │
-│  │  ════════░░░░░░░░░░░░░░░░░░  10%          │  │
-│  └────────────────────────────────────────────┘  │
+│  ════════░░░░░░░░░░░░░░░░░░░░░░░░  10%          │  ← 2px progress
 └──────────────────────────────────────────────────┘
 ```
 
-- URL 입력이 상단 바로 축소
-- 플레이어는 이미 로드 (바로 재생 가능)
-- 자막 영역에 번역 진행 상태 표시
-
-#### State 3: 재생 중 (핵심 상태)
+#### State 2: 재생 중 (핵심 상태)
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  🔗 YouTube 강의 제목...              ⚙  🌙     │  ← 호버시만 표시 (auto-hide)
-│                                                  │
+│ ←                                                │
 │  ┌────────────────────────────────────────────┐  │
-│  │                                            │  │
 │  │                                            │  │
 │  │         YouTube Player (재생 중)            │  │
 │  │                                            │  │
-│  │                                            │  │
+│  │    ┌────────────────────────────────┐      │  │
+│  │    │ 여러분 안녕하세요, 오늘 강의에  │      │  │  ← 번역만 표시 (기본)
+│  │    │ 오신 것을 환영합니다           │      │  │
+│  │    │                                │      │  │
+│  │    │ Hello everyone, welcome to     │      │  │  ← 원문 (T키 토글)
+│  │    │ today's lecture                │      │  │
+│  │    └────────────────────────────────┘      │  │
+│  │  ▄▄▄ ▶ 0:42 ━━━━━━━ 3:28  🔊              │  │
 │  └────────────────────────────────────────────┘  │
-│                                                  │
-│  ┌────────────────────────────────────────────┐  │
-│  │                                            │  │
-│  │    여러분 안녕하세요, 오늘 강의에           │  │  ← 번역만 표시 (기본)
-│  │    오신 것을 환영합니다                     │  │
-│  │                                            │  │
-│  │    Hello everyone, welcome to today's      │  │  ← 원문 (T키 토글, 기본 숨김)
-│  │    lecture                                 │  │
-│  │                                            │  │
-│  └────────────────────────────────────────────┘  │
-│  ───────────────────────────────── cached ✓      │  ← 상태 라인 (미니멀)
+│  ━━━━━━━━━━━━━━━━━━━━░░░░░░░░░░░░  80%          │  ← 2px progress
 └──────────────────────────────────────────────────┘
 ```
 
-- URL 바는 auto-hide (마우스 호버 시 표시)
-- 영상이 최대 면적 차지
-- 자막 영역은 항상 표시 (영상의 자연스러운 확장)
-- 하단 상태 라인은 한 줄 (cached ✓ / translating... / error)
-
-#### State 4: Seek → 캐시 miss
+#### State 3: Seek → 캐시 miss
 
 ```
-  ┌────────────────────────────────────────────┐
-  │                                            │
-  │    ◌  번역 준비 중...                       │  ← 자막 영역에 shimmer 효과
-  │       ━━━━━━━━░░░░░░                       │
-  │                                            │
-  └────────────────────────────────────────────┘
+│    ┌────────────────────────────────┐      │
+│    │  ◌  번역 준비 중...             │      │  ← shimmer 효과
+│    │     ━━━━━━━━░░░░░░             │      │
+│    └────────────────────────────────┘      │
 ```
 
-#### State 5: 에러
+#### State 4: 에러
 
 ```
-  ┌────────────────────────────────────────────┐
-  │                                            │
-  │    ⚠  이 영상에는 자막이 없습니다           │  ← 에러 메시지
-  │       자동 자막이 있는 영상을 시도해주세요   │
-  │                                            │
-  └────────────────────────────────────────────┘
+│    ┌────────────────────────────────┐      │
+│    │  ⚠  이 영상에는 자막이 없습니다 │      │
+│    │     자동 자막이 있는 영상을     │      │
+│    │     시도해주세요               │      │
+│    └────────────────────────────────┘      │
 ```
 
 ---
@@ -311,76 +322,99 @@
 ### 컴포넌트 트리
 
 ```
-App
-├── URLBar                    ← 상단 URL 입력 (auto-hide 가능)
-│   ├── URLInput              ← shadcn Input + 붙여넣기 감지
-│   └── ActionButtons         ← 설정, 테마 토글
+App (Tanstack Router Provider)
+├── Route: "/"
+│   └── HomePage                  ← URL 입력만 중앙 표시
+│       └── URLInputLarge         ← 중앙 대형 입력 (붙여넣기 감지)
 │
-├── EmptyState                ← 빈 상태 (URL 미입력)
-│   ├── AppLogo
-│   ├── WelcomeText
-│   └── URLInputLarge         ← 중앙 대형 입력
-│
-├── VideoPlayer               ← YouTube iframe 래퍼
-│   ├── YouTubeEmbed          ← iframe API 관리
-│   └── PlayerSkeleton        ← 로딩 placeholder
-│
-├── SubtitleStage             ← 자막 표시 영역 (핵심 컴포넌트)
-│   ├── TranslatedText        ← 번역 자막 (크고 밝게)
-│   ├── OriginalText          ← 원문 (작고 흐리게)
-│   ├── LoadingState          ← "번역 준비 중..." shimmer
-│   └── ErrorState            ← 에러 메시지
-│
-├── StatusLine                ← 하단 상태 표시줄
-│   ├── ProgressBar           ← 번역 진행률
-│   ├── ChunkInfo             ← "3/10 청크"
-│   └── CacheStatus           ← "cached ✓" / "translating..."
-│
-└── EnvironmentCheck          ← 앱 시작 시 Claude CLI 검증 모달
+└── Route: "/watch/$videoId"
+    └── PlayerPage
+        ├── BackButton             ← ← 버튼, Home으로 복귀
+        │
+        ├── VideoPlayer            ← YouTube iframe 래퍼
+        │   ├── YouTubeEmbed       ← iframe API 관리
+        │   └── PlayerSkeleton     ← 로딩 placeholder
+        │
+        ├── SubtitleOverlay        ← 영상 위 오버레이 (핵심 컴포넌트)
+        │   ├── TranslatedText     ← 번역 자막 (크고 밝게)
+        │   ├── OriginalText       ← 원문 (작고 흐리게, T키 토글)
+        │   ├── LoadingState       ← "번역 준비 중..." shimmer
+        │   └── ErrorState         ← 에러 메시지
+        │
+        ├── ProgressBar            ← 영상 아래 2px 얇은 진행 바
+        │
+        └── EnvironmentCheck       ← 앱 시작 시 Claude CLI 검증 모달
 ```
 
 ### shadcn 컴포넌트 매핑
 
 | 앱 컴포넌트 | shadcn 베이스 | 커스터마이징 |
 |------------|--------------|-------------|
-| URLInput | `Input` | rounded-4xl, 대형 높이, 붙여넣기 아이콘 |
-| ActionButtons | `Button` (ghost variant) | 아이콘 전용, 호버 시 툴팁 |
-| SubtitleStage | `Card` | 커스텀 배경, 상단 border-t 구분선 |
-| ProgressBar | `Progress` | 얇은 라인, subtle 색상 |
+| URLInputLarge | `Input` | rounded-4xl, 대형 높이, 붙여넣기 아이콘 |
+| BackButton | `Button` (ghost variant) | 아이콘 전용, 좌상단 고정 |
+| SubtitleOverlay | — | 커스텀 (position: absolute, 반투명 배경) |
+| ProgressBar | — | 커스텀 2px 높이, 영상 아래 inline |
 | ErrorState | `Alert` | destructive variant, 인라인 |
 | EnvironmentCheck | `Dialog` | 앱 시작 시 한 번만 표시 |
-| StatusLine | — | 커스텀 (shadcn 없음) |
 
 ---
 
 ## 6. 자막 표시 상세
 
-### SubtitleStage 디자인
+### SubtitleOverlay 디자인
 
-자막 영역은 이 앱의 **핵심 UX 차별화 포인트**다.
+자막 오버레이는 이 앱의 **핵심 UX 차별화 포인트**다. 영상 위에 절대 위치로 배치되어 YouTube 컨트롤 바 바로 위에 표시된다.
 
 ```css
-.subtitle-stage {
-  /* 영상과 자연스럽게 연결되는 느낌 */
-  background: var(--subtitle-bg);
-  border-top: 1px solid var(--subtitle-border);
-  padding: 1.5rem 2rem;
-  min-height: 120px;
+.subtitle-overlay {
+  /* 영상 위 절대 위치 — YouTube 컨트롤 바 바로 위 */
+  position: absolute;
+  bottom: 60px;              /* YouTube 컨트롤 바 높이 고려 */
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+
+  /* 반투명 검정 박스 */
+  background: var(--subtitle-bg);  /* rgba(0,0,0,0.75) */
+  border-radius: var(--radius);
+  padding: 0.75rem 1.25rem;
+  max-width: 70%;
+
   display: flex;
   flex-direction: column;
-  justify-content: center;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.5rem;
+
+  /* 자막 없을 때 숨김 */
+  &:empty {
+    display: none;
+  }
+}
+
+/* 영상 컨테이너: 오버레이의 position 기준점 */
+.video-container {
+  position: relative;
+  width: 100%;
+  padding-bottom: 56.25%; /* 16:9 */
+  background: oklch(0.1 0 0);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.video-container iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .subtitle-translated {
   font-family: var(--font-family);
   font-size: var(--subtitle-size);         /* 20px */
   font-weight: 600;
-  color: var(--subtitle-text);
+  color: var(--subtitle-text);             /* 흰색 */
   line-height: var(--leading-subtitle);
   text-align: center;
-  max-width: 80%;
 
   /* 부드러운 전환 — 자막이 바뀔 때 */
   animation: subtitle-fade-in 0.3s ease-out;
@@ -389,9 +423,8 @@ App
 .subtitle-original {
   font-size: var(--subtitle-original-size); /* 14px */
   font-weight: 400;
-  color: var(--subtitle-original);          /* dimmed */
+  color: var(--subtitle-original);          /* 회색, dimmed */
   text-align: center;
-  max-width: 80%;
 }
 
 @keyframes subtitle-fade-in {
@@ -403,6 +436,26 @@ App
     opacity: 1;
     transform: translateY(0);
   }
+}
+```
+
+### ProgressBar 디자인
+
+영상 컨테이너 바로 아래에 위치하는 2px 얇은 진행 바.
+
+```css
+.progress-bar {
+  width: 100%;
+  height: 2px;
+  background: var(--progress-track);
+  border-radius: 0;                        /* 날카롭게 */
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--progress-fill);
+  transition: width 0.3s ease-out;
 }
 ```
 
@@ -421,37 +474,31 @@ App
 
 ## 7. 인터랙션 패턴
 
-### URL 입력 플로우
+### URL 입력 플로우 (Home → Player)
 
 ```
-1. 앱 시작 → 빈 상태 (중앙 URL 입력)
+1. 앱 시작 → Home View (/ 경로, 중앙 URL 입력)
 2. URL 붙여넣기 → 즉시 video ID 파싱
-   ├─ 유효한 URL → 플레이어 로드 + 자막 fetch 시작
-   │                URL 바가 상단으로 슬라이드 (400ms ease)
-   │                빈 상태가 fade-out (300ms)
+   ├─ 유효한 URL → Fade 전환 (Home fade-out 200ms → Player fade-in 300ms)
+   │                Tanstack Router navigate("/watch/$videoId")
+   │                Player View에서 영상 로드 + 자막 fetch 시작
    └─ 무효한 URL → Input에 빨간 테두리 + shake 애니메이션
-3. 새 URL 입력 → 기존 영상 교체 (확인 없이 즉시)
+3. ← 버튼 → Fade 전환으로 Home View 복귀
 ```
 
-### URL Bar Auto-hide
-
-재생 중에는 URL 바가 자동으로 사라져 영상 면적을 극대화:
+### 뷰 전환 (Fade)
 
 ```
-재생 시작 → 3초 후 URL 바 fade-out (opacity: 0, height: 0)
-마우스가 상단 48px 영역 진입 → URL 바 slide-down 표시
-마우스가 영역 이탈 → 2초 후 fade-out
-URL 바 클릭/포커스 중 → 항상 표시
-일시정지 → 항상 표시
+Home → Player: Home fade-out (200ms) → Player fade-in (300ms)
+Player → Home: Player fade-out (200ms) → Home fade-in (300ms)
 ```
 
 ### 번역 진행 표시
 
 ```
-번역 시작 → StatusLine에 progress bar 등장 (fade-in)
-각 청크 완료 → progress bar 증가 (ease-out 전환)
-                ChunkInfo 업데이트 ("3/10 청크")
-전체 완료 → progress bar fade-out
+번역 시작 → ProgressBar 등장 (fade-in) + SubtitleOverlay에 shimmer
+각 청크 완료 → ProgressBar 증가 (ease-out 전환)
+전체 완료 → ProgressBar fade-out
              "cached ✓" 표시 (2초 후 fade-out)
 ```
 
@@ -459,9 +506,22 @@ URL 바 클릭/포커스 중 → 항상 표시
 
 ```
 Seek (캐시 hit) → 자막 즉시 전환 (fade-in 300ms)
-Seek (캐시 miss) → SubtitleStage에 shimmer 로딩
-                    StatusLine: "번역 준비 중..."
+Seek (캐시 miss) → SubtitleOverlay에 shimmer 로딩
+                    ProgressBar 재활성화: "번역 준비 중..."
                     해당 청크 번역 완료 → 자막 표시
+```
+
+### 풀스크린 전환
+
+```
+F키 또는 YouTube 풀스크린 버튼 클릭
+→ YouTube iframe Fullscreen API 가로채기
+→ Tauri window.setFullscreen(true) 호출
+→ 윈도우 전체가 풀스크린 (SubtitleOverlay 그대로 유지)
+
+F키 재입력 또는 ESC
+→ Tauri window.setFullscreen(false) 호출
+→ 일반 윈도우로 복귀
 ```
 
 ---
@@ -481,16 +541,27 @@ Seek (캐시 miss) → SubtitleStage에 shimmer 로딩
   "resizable": true,
   "decorations": true,
   "transparent": false,
-  "center": true
+  "center": true,
+  "fullscreen": false
 }
 ```
+
+### 풀스크린 동작
+
+| 트리거 | 동작 |
+|--------|------|
+| F키 | `window.setFullscreen(true/false)` 토글 |
+| YouTube 풀스크린 버튼 | 가로채서 Tauri 풀스크린으로 대체 |
+| ESC (풀스크린 중) | `window.setFullscreen(false)` |
+
+**중요:** YouTube iframe Fullscreen API는 사용하지 않는다. iframe이 풀스크린되면 SubtitleOverlay가 가려지기 때문에, Tauri 윈도우 자체를 풀스크린으로 전환한다.
 
 ### 반응형 동작
 
 | 윈도우 너비 | 동작 |
 |------------|------|
-| ≥ 960px | 기본 레이아웃, 자막 max-width: 80% |
-| 640-959px | 자막 max-width: 90%, 폰트 약간 축소 |
+| ≥ 960px | 기본 레이아웃, SubtitleOverlay max-width: 70% |
+| 640-959px | SubtitleOverlay max-width: 85%, 폰트 약간 축소 |
 | < 640px | 지원하지 않음 (minWidth: 640) |
 
 ### 16:9 영상 비율 유지
@@ -523,20 +594,23 @@ Luma의 기본 spacing에 앱 전용 값 추가:
 :root {
   /* 앱 레이아웃 */
   --app-padding: 1rem;            /* 앱 가장자리 여백 */
-  --section-gap: 0.5rem;          /* 섹션 간 간격 (영상↔자막) */
+  --section-gap: 0.25rem;         /* 섹션 간 간격 (영상↔progress bar) */
 
-  /* URL Bar */
-  --url-bar-height: 48px;
-  --url-bar-padding: 0 1rem;
+  /* Home View */
+  --url-input-width: 480px;       /* 중앙 URL 입력 최대 너비 */
 
-  /* 자막 영역 */
-  --subtitle-padding-x: 2rem;
-  --subtitle-padding-y: 1.5rem;
-  --subtitle-gap: 0.75rem;        /* 번역↔원문 간격 */
+  /* Player View */
+  --back-button-size: 36px;       /* 뒤로가기 버튼 크기 */
+  --back-button-margin: 0.75rem;  /* 뒤로가기 버튼 여백 */
 
-  /* 상태 라인 */
-  --status-height: 28px;
-  --status-padding: 0 1rem;
+  /* SubtitleOverlay */
+  --overlay-bottom: 60px;         /* YouTube 컨트롤 바 높이 기준 */
+  --overlay-padding-x: 1.25rem;
+  --overlay-padding-y: 0.75rem;
+  --overlay-gap: 0.5rem;          /* 번역↔원문 간격 */
+
+  /* ProgressBar */
+  --progress-bar-height: 2px;     /* 영상 아래 thin bar */
 }
 ```
 
@@ -550,6 +624,7 @@ Lucide 아이콘 (Luma 기본) 사용:
 |------|--------|------------|
 | URL 입력 | 🔗 | `Link` |
 | 붙여넣기 | 📋 | `ClipboardPaste` |
+| 뒤로가기 | ← | `ArrowLeft` |
 | 설정 | ⚙ | `Settings` |
 | 다크/라이트 토글 | 🌙/☀ | `Moon` / `Sun` |
 | 닫기 | ✕ | `X` |
@@ -577,9 +652,9 @@ Lucide 아이콘 (Luma 기본) 사용:
 | 유형 | 시간 | 용도 |
 |------|------|------|
 | Micro | 150ms | 호버, 포커스 |
-| Fast | 300ms | 자막 전환, fade-in/out |
-| Normal | 400ms | 레이아웃 변경 (URL 바 이동) |
-| Slow | 600ms | 페이지 전환 (빈 상태 → 플레이어) |
+| Fast | 200ms | 뷰 fade-out |
+| Normal | 300ms | 자막 전환, 뷰 fade-in |
+| Slow | 500ms | 전체 뷰 전환 합산 (200ms out + 300ms in) |
 
 ### 핵심 애니메이션
 
@@ -590,10 +665,15 @@ Lucide 아이콘 (Luma 기본) 사용:
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* URL 바 auto-hide */
-@keyframes url-bar-hide {
-  from { opacity: 1; max-height: 48px; }
-  to   { opacity: 0; max-height: 0; }
+/* 뷰 전환 fade */
+@keyframes view-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes view-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
 }
 
 /* shimmer (캐시 miss 로딩) */
@@ -605,9 +685,9 @@ Lucide 아이콘 (Luma 기본) 사용:
 .shimmer {
   background: linear-gradient(
     90deg,
-    var(--subtitle-bg) 25%,
-    oklch(0.25 0 0) 50%,
-    var(--subtitle-bg) 75%
+    rgba(0,0,0,0.6) 25%,
+    rgba(60,60,60,0.8) 50%,
+    rgba(0,0,0,0.6) 75%
   );
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
@@ -631,9 +711,11 @@ Lucide 아이콘 (Luma 기본) 사용:
 | `+` / `=` | 자막 크기 증가 | 20px → 24px (--subtitle-size-lg) |
 | `-` | 자막 크기 감소 | 24px → 20px (--subtitle-size) |
 | `Space` | 재생 / 일시정지 | YouTube iframe API `playVideo()` / `pauseVideo()` |
+| `F` | 풀스크린 토글 | Tauri `window.setFullscreen()` 호출 |
 
 - 키보드 단축키는 URL 입력 포커스 시 비활성화 (입력과 충돌 방지)
 - YouTube 플레이어 내부 포커스 시에도 동작하도록 window 레벨 이벤트 리스너
+- F키는 YouTube iframe의 내장 풀스크린 대신 Tauri 풀스크린을 사용
 
 ---
 
@@ -663,6 +745,7 @@ Phase 0에서 두 가지 접근을 모두 테스트:
 | `getCurrentTime()` 폴링 안정성 | 500ms 간격으로 100회 연속 정상 응답 |
 | `onStateChange` 이벤트 수신 | play/pause/seek 모두 감지 |
 | 초기 로딩 시간 | URL 입력 → 플레이어 조작 가능까지 |
+| 풀스크린 버튼 가로채기 | YouTube 내장 풀스크린 → Tauri 풀스크린 대체 확인 |
 
 ---
 
@@ -694,7 +777,7 @@ Phase 0에서 두 가지 접근을 모두 테스트:
 - shadcn `Dialog` 컴포넌트 사용
 - "다시 확인" 버튼으로 설치 완료 후 재검증
 - 모달이 닫히기 전까지 메인 UI 비활성화
-- 설치 완료 확인 시 모달 자동 닫힘 + 빈 상태 화면으로 전환
+- 설치 완료 확인 시 모달 자동 닫힘 + Home View로 전환
 
 ---
 
@@ -702,10 +785,10 @@ Phase 0에서 두 가지 접근을 모두 테스트:
 
 | 항목 | 기준 |
 |------|------|
-| 색상 대비 | 자막 텍스트: WCAG AA (4.5:1 이상) |
-| 키보드 내비게이션 | Tab으로 URL 입력 → 영상 → 자막 영역 |
+| 색상 대비 | 자막 텍스트: WCAG AA (4.5:1 이상) — 반투명 검정 박스 위 흰색 텍스트 |
+| 키보드 내비게이션 | Tab으로 URL 입력 → 뒤로가기 버튼 → 영상 |
 | 포커스 링 | var(--ring) 사용, 2px solid |
-| 화면 읽기 | 자막 영역에 aria-live="polite" |
+| 화면 읽기 | SubtitleOverlay에 aria-live="polite" |
 | 텍스트 크기 | rem 단위, 브라우저 설정 존중 |
 
 ---
@@ -715,30 +798,33 @@ Phase 0에서 두 가지 접근을 모두 테스트:
 ```
 src/
 ├── app/
-│   ├── App.tsx
+│   ├── App.tsx                  ← Tanstack Router Provider + 라우트 정의
 │   ├── globals.css              ← CSS 변수, 폰트, 기본 스타일
 │   └── providers.tsx            ← 테마, 상태 프로바이더
+│
+├── routes/
+│   ├── index.tsx                ← "/" → HomePage
+│   └── watch.$videoId.tsx       ← "/watch/$videoId" → PlayerPage
 │
 ├── components/
 │   ├── ui/                      ← shadcn 컴포넌트 (자동 생성)
 │   │   ├── button.tsx
 │   │   ├── input.tsx
-│   │   ├── card.tsx
-│   │   ├── progress.tsx
 │   │   ├── alert.tsx
 │   │   └── dialog.tsx
 │   │
-│   ├── url-bar.tsx              ← URL 입력 바 (auto-hide)
-│   ├── empty-state.tsx          ← 빈 상태 화면
+│   ├── home-page.tsx            ← Home View (/ 경로, URL 입력 중앙)
+│   ├── player-page.tsx          ← Player View (/watch/$videoId)
+│   ├── back-button.tsx          ← ← 버튼 (Player 상단)
 │   ├── video-player.tsx         ← YouTube iframe 래퍼
-│   ├── subtitle-stage.tsx       ← 자막 표시 영역
-│   ├── status-line.tsx          ← 하단 상태 표시줄
-│   └── environment-check.tsx    ← Claude CLI 검증 다이얼로그
+│   ├── subtitle-overlay.tsx     ← 영상 위 자막 오버레이
+│   ├── progress-bar.tsx         ← 영상 아래 2px thin bar
+│   └── environment-check.tsx   ← Claude CLI 검증 다이얼로그
 │
 ├── hooks/
 │   ├── use-player-sync.ts       ← 재생 시간 ↔ 자막 동기화
 │   ├── use-translation.ts       ← 번역 상태 관리
-│   ├── use-auto-hide.ts         ← URL 바 auto-hide 로직
+│   ├── use-fullscreen.ts        ← Tauri 풀스크린 토글
 │   └── use-subtitle-cache.ts    ← 캐시 hit/miss 관리
 │
 ├── lib/
@@ -749,4 +835,21 @@ src/
 └── types/
     ├── subtitle.ts              ← Subtitle, Translation 타입
     └── player.ts                ← PlayerState 타입
+```
+
+### 라우팅 (Tanstack Router)
+
+```typescript
+// routes/index.tsx
+export const Route = createFileRoute('/')({
+  component: HomePage,
+})
+
+// routes/watch.$videoId.tsx
+export const Route = createFileRoute('/watch/$videoId')({
+  component: PlayerPage,
+})
+
+// PlayerPage에서 videoId 접근
+const { videoId } = Route.useParams()  // 타입 안전
 ```
