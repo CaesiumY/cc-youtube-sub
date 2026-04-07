@@ -13,7 +13,7 @@ Phase 0(YouTube 임베드 플레이어)과 Phase 1(Claude 번역 파이프라인
 | SQLite 동시성 제약 | 읽기/쓰기 락 대기 | WAL(Write-Ahead Logging) 활성화, 캐시 쓰기는 백그라운드 스레드에서만 |
 | Seek 후 버퍼 재스케줄링 | 이전 청크 번역이 여전히 도착 | 버퍼링 세션 ID 또는 타임스탬프로 폐기된 청크 감지 |
 | SubtitleOverlay 렌더링 지연 | 자막이 늦게 나타남 | 재생 시간 폴링 500ms → 200ms 단축 테스트 |
-| 캐시 miss 시 '번역 준비 중...' 인디케이터 | 사용자 혼란 | seek 위치별 캐시 상태 미리 파악, 로딩 상태 명확히 표시 |
+| 캐시 miss 시 '번역 준비 중...' 인디케이터 | 사용자 혼란 | seek 위치별 캐시 상태 미리 파악, 로딩 상태 오버레이 박스 내에 명확히 표시 |
 
 ## 구현 범위
 
@@ -31,16 +31,26 @@ Phase 0(YouTube 임베드 플레이어)과 Phase 1(Claude 번역 파이프라인
 - [ ] 빠른 seek 후에도 정확한 자막 동기화 확인
 
 ### 3. SubtitleOverlay 컴포넌트 (번역 자막 표시)
-- [ ] React 컴포넌트: 플레이어 하단에 번역 자막 오버레이
+- [ ] React 컴포넌트: 영상 위 오버레이 (position: absolute, bottom: ~60px — YouTube 컨트롤 바 바로 위)
+- [ ] 스타일: 반투명 검정 박스 (rgba(0,0,0,0.75)), 흰 글자, 반응형 폰트 크기
 - [ ] 상태 관리:
   - [ ] 현재 표시할 자막 텍스트 (원본/번역)
   - [ ] 번역 진행 상태 (준비 중/완료/오류)
   - [ ] 캐시 상태 표시 (캐시 hit/miss)
+  - [ ] 원본 텍스트 토글 상태 (기본: 숨김)
 - [ ] UI 요소:
-  - [ ] 번역 자막 텍스트 영역 (한국어)
-  - [ ] 원본 자막 텍스트 (옵션, 영어)
-  - [ ] 로딩 인디케이터 (캐시 miss 시 "번역 준비 중..." 표시)
-- [ ] 스타일: 검은 배경, 흰 글자, 투명도 조절, 반응형 폰트 크기
+  - [ ] 번역 자막 텍스트 영역 (한국어) — 기본 표시
+  - [ ] 원본 자막 텍스트 (T키 토글 시 번역 아래 14px 회색으로 표시)
+  - [ ] 로딩 인디케이터 (캐시 miss 시 오버레이 박스 내에 "번역 준비 중..." 표시)
+- [ ] 키보드 단축키:
+  - [ ] T: 원본 텍스트 토글 (번역 아래 원문 표시/숨김)
+  - [ ] +/-: 자막 폰트 크기 조절
+  - [ ] Space: 재생/일시정지
+
+### 3-1. ProgressBar (번역 진행률 표시)
+- [ ] 영상 컨테이너 바로 아래 2px 얇은 진행률 바
+- [ ] 번역 진행 상태에 따라 너비 증가 (0% → 100%)
+- [ ] 전체 번역 완료 시 자동 사라짐 (fade-out)
 
 ### 4. SQLite 스키마 설계 + tauri-plugin-sql 연동
 - [ ] Cargo.toml에 tauri-plugin-sql 의존성 추가
@@ -86,15 +96,14 @@ Phase 0(YouTube 임베드 플레이어)과 Phase 1(Claude 번역 파이프라인
 - [ ] 재생 시작 → SubtitleOverlay가 캐시된 자막 즉시 표시
 - [ ] 예상 지연: 0~1초 (네트워크/DB 없음)
 
-### 8. 번역 진행률 UI (로딩 상태 표시)
-- [ ] 상태 표시 영역:
-  - [ ] 진행률 바: "2/10 청크 완료"
-  - [ ] 현재 청크 상태: "청크 2 번역 중..."
-  - [ ] 캐시 히트 수: "캐시에서 로드됨 8개"
+### 8. 번역 진행률 UI (ProgressBar)
+- [ ] 영상 컨테이너 바로 아래 2px 얇은 ProgressBar
 - [ ] 상태 업데이트:
   - [ ] 청크 번역 시작 → 진행률 증가
   - [ ] 캐시 hit → 진행률 즉시 증가
-  - [ ] 모든 청크 완료 → "준비 완료" 상태
+  - [ ] 모든 청크 완료 → 100% 후 fade-out
+- [ ] 진행 중 텍스트 표시 (ProgressBar 옆 또는 아래): "청크 2/10 번역 중..."
+- [ ] 캐시 히트 수 표시: "캐시에서 로드됨 8개"
 
 ### 9. Seek 처리 (사용자가 영상 중간으로 점프)
 - [ ] seek 이벤트 감지 (플레이어 onSeek 콜백)
@@ -199,38 +208,55 @@ function findMatchingSubtitle(
 
 ### SubtitleOverlay 컴포넌트 (React + TypeScript)
 
+오버레이는 영상 위에 position: absolute로 배치되며, YouTube 컨트롤 바 바로 위(bottom: ~60px)에 위치한다.
+
 ```typescript
 interface SubtitleOverlayProps {
   subtitle: Subtitle | null;
   isLoading: boolean;
   cacheStatus: 'hit' | 'miss' | 'idle';
+  showOriginal: boolean;  // T키 토글 상태
 }
 
 export function SubtitleOverlay({
   subtitle,
   isLoading,
   cacheStatus,
+  showOriginal,
 }: SubtitleOverlayProps) {
   return (
+    // position: absolute, bottom: ~60px, 영상 컨테이너 기준
     <div className="subtitle-overlay">
-      {isLoading && <div className="loading">번역 준비 중...</div>}
-      
-      {subtitle && (
+      {isLoading && (
+        <div className="loading">번역 준비 중...</div>
+      )}
+
+      {subtitle && !isLoading && (
         <div className="subtitle-text">
+          {/* 번역 자막 — 기본 표시 */}
           <div className="translated">{subtitle.translated}</div>
-          <div className="original">{subtitle.original}</div>
-          {cacheStatus === 'hit' && (
-            <div className="cache-indicator">캐시 hit</div>
+          {/* 원문 — T키 토글 시 번역 아래 14px 회색으로 표시 */}
+          {showOriginal && (
+            <div className="original">{subtitle.original}</div>
           )}
         </div>
-      )}
-      
-      {!subtitle && !isLoading && (
-        <div className="empty"></div>
       )}
     </div>
   );
 }
+
+// 스타일 (CSS)
+// .subtitle-overlay {
+//   position: absolute;
+//   bottom: 60px;  /* YouTube 컨트롤 바 높이 위 */
+//   left: 50%;
+//   transform: translateX(-50%);
+//   background: rgba(0, 0, 0, 0.75);
+//   padding: 8px 16px;
+//   border-radius: 4px;
+// }
+// .translated { color: oklch(0.98 0 0); font-size: 18px; }
+// .original   { color: oklch(0.556 0 0); font-size: 14px; margin-top: 4px; }
 ```
 
 ### tauri-plugin-sql 초기화 (Rust)
@@ -340,7 +366,9 @@ useEffect(() => {
 
 ### 기능 완료
 - [ ] Phase 0 + Phase 1 통합: URL 입력 → 자막 fetch → 번역 → 표시 전체 플로우 동작
-- [ ] SubtitleOverlay 컴포넌트 구현 및 렌더링 확인
+- [ ] SubtitleOverlay 컴포넌트 구현 및 렌더링 확인 (영상 위 오버레이, bottom: ~60px)
+- [ ] 키보드 단축키 동작: T(원문 토글), +/-(폰트 크기), Space(재생/일시정지)
+- [ ] ProgressBar: 영상 컨테이너 아래 2px 바, 번역 완료 시 fade-out
 - [ ] SQLite 테이블 생성 및 쿼리 성공 (tauri-plugin-sql 연동)
 - [ ] 번역 결과 자동 캐시 저장 (백그라운드 스레드)
 - [ ] 캐시 조회 동작:
@@ -354,7 +382,7 @@ useEffect(() => {
   - [ ] 빠른 seek 후에도 올바른 자막 표시
 - [ ] Seek 처리:
   - [ ] 캐시 hit 위치: 즉시 자막 표시
-  - [ ] 캐시 miss 위치: "번역 준비 중..." 표시 + 해당 청크 우선 번역
+  - [ ] 캐시 miss 위치: 오버레이 박스 내 "번역 준비 중..." 표시 + 해당 청크 우선 번역
 - [ ] 번역 진행률 UI:
   - [ ] 청크 완료 시마다 진행률 업데이트
   - [ ] 캐시 히트 수 표시
