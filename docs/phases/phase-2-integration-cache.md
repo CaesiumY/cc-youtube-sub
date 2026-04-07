@@ -33,11 +33,12 @@ Phase 0(YouTube 임베드 플레이어)과 Phase 1(Claude 번역 파이프라인
 ### 3. SubtitleOverlay 컴포넌트 (번역 자막 표시)
 - [ ] React 컴포넌트: 영상 위 오버레이 (position: absolute, bottom: ~60px — YouTube 컨트롤 바 바로 위)
 - [ ] 스타일: 반투명 검정 박스 (rgba(0,0,0,0.75)), 흰 글자, 반응형 폰트 크기
+- [ ] 자막 fade-in/out: `motion/react` AnimatePresence 사용
 - [ ] 상태 관리:
-  - [ ] 현재 표시할 자막 텍스트 (원본/번역)
+  - [ ] **Tauri 서버 상태** (Tanstack Query): invoke() 결과 캐싱 — 자막 fetch, 캐시 조회, 번역 트리거
+  - [ ] **UI 클라이언트 상태** (Zustand): currentTime, showOriginal, subtitleSize
   - [ ] 번역 진행 상태 (준비 중/완료/오류)
   - [ ] 캐시 상태 표시 (캐시 hit/miss)
-  - [ ] 원본 텍스트 토글 상태 (기본: 숨김)
 - [ ] UI 요소:
   - [ ] 번역 자막 텍스트 영역 (한국어) — 기본 표시
   - [ ] 원본 자막 텍스트 (T키 토글 시 번역 아래 14px 회색으로 표시)
@@ -52,8 +53,9 @@ Phase 0(YouTube 임베드 플레이어)과 Phase 1(Claude 번역 파이프라인
 - [ ] 번역 진행 상태에 따라 너비 증가 (0% → 100%)
 - [ ] 전체 번역 완료 시 자동 사라짐 (fade-out)
 
-### 4. SQLite 스키마 설계 + tauri-plugin-sql 연동
+### 4. SQLite 스키마 설계 + tauri-plugin-sql 연동 + tauri-specta 타입 생성
 - [ ] Cargo.toml에 tauri-plugin-sql 의존성 추가
+- [ ] tauri-specta v2로 Rust 커맨드 → TypeScript 타입 자동 생성 (bindings.ts)
 - [ ] 초기화 마이그레이션: `CREATE TABLE IF NOT EXISTS` 스크립트
 - [ ] 스키마 설계:
   ```sql
@@ -209,13 +211,17 @@ function findMatchingSubtitle(
 ### SubtitleOverlay 컴포넌트 (React + TypeScript)
 
 오버레이는 영상 위에 position: absolute로 배치되며, YouTube 컨트롤 바 바로 위(bottom: ~60px)에 위치한다.
+자막 fade-in/out은 `motion/react`의 `AnimatePresence`로 선언적으로 처리한다.
 
 ```typescript
+import { AnimatePresence, motion } from 'motion/react'
+
 interface SubtitleOverlayProps {
   subtitle: Subtitle | null;
   isLoading: boolean;
   cacheStatus: 'hit' | 'miss' | 'idle';
-  showOriginal: boolean;  // T키 토글 상태
+  showOriginal: boolean;  // Zustand store에서 읽음 (T키 토글)
+  subtitleSize: number;   // Zustand store에서 읽음 (+/- 키)
 }
 
 export function SubtitleOverlay({
@@ -223,6 +229,7 @@ export function SubtitleOverlay({
   isLoading,
   cacheStatus,
   showOriginal,
+  subtitleSize,
 }: SubtitleOverlayProps) {
   return (
     // position: absolute, bottom: ~60px, 영상 컨테이너 기준
@@ -231,16 +238,25 @@ export function SubtitleOverlay({
         <div className="loading">번역 준비 중...</div>
       )}
 
-      {subtitle && !isLoading && (
-        <div className="subtitle-text">
-          {/* 번역 자막 — 기본 표시 */}
-          <div className="translated">{subtitle.translated}</div>
-          {/* 원문 — T키 토글 시 번역 아래 14px 회색으로 표시 */}
-          {showOriginal && (
-            <div className="original">{subtitle.original}</div>
-          )}
-        </div>
-      )}
+      <AnimatePresence>
+        {subtitle && !isLoading && (
+          <motion.div
+            key={subtitle.start}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="subtitle-text"
+            style={{ fontSize: subtitleSize }}
+          >
+            {/* 번역 자막 — 기본 표시 */}
+            <div className="translated">{subtitle.translated}</div>
+            {/* 원문 — T키 토글 시 번역 아래 14px 회색으로 표시 */}
+            {showOriginal && (
+              <div className="original">{subtitle.original}</div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -348,18 +364,38 @@ async fn query_cache(
 
 ### 재생 시간 폴링 + 자막 동기화 (React)
 
+`react-youtube`의 `onReady` 콜백에서 `YT.Player` 인스턴스를 ref에 저장하고, 200ms 폴링으로 재생 시간을 Zustand `currentTime`에 기록한다.
+
 ```typescript
+import YouTube, { YouTubeEvent } from 'react-youtube'
+import { usePlayerStore } from '@/store/playerStore'  // Zustand store
+
+// Zustand store: currentTime, showOriginal, subtitleSize
+const setCurrentTime = usePlayerStore(s => s.setCurrentTime)
+const currentTime = usePlayerStore(s => s.currentTime)
+
+const playerRef = useRef<YT.Player>(null)
+
+const onReady = (event: YouTubeEvent) => {
+  playerRef.current = event.target
+}
+
 useEffect(() => {
   const pollInterval = setInterval(() => {
     if (playerRef.current) {
-      const currentTime = playerRef.current.getCurrentTime();
-      const matchingSubtitle = findMatchingSubtitle(currentTime, allSubtitles);
-      setCurrentSubtitle(matchingSubtitle);
+      const time = playerRef.current.getCurrentTime()
+      setCurrentTime(time)  // Zustand store 업데이트
     }
-  }, 200);  // 200ms 폴링 (5fps 자막 갱신)
+  }, 200)  // 200ms 폴링 (5fps 자막 갱신)
   
-  return () => clearInterval(pollInterval);
-}, [allSubtitles]);
+  return () => clearInterval(pollInterval)
+}, [])
+
+// 자막 매칭은 currentTime 변화에 반응
+const currentSubtitle = useMemo(
+  () => findMatchingSubtitle(currentTime, allSubtitles),
+  [currentTime, allSubtitles]
+)
 ```
 
 ## 완료 기준

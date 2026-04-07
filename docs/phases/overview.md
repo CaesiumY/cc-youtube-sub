@@ -18,10 +18,10 @@ YouTube iframe   timedtext fetch      Phase 0 + 1 연결   사전 버퍼링
 
 | Phase | 이름 | 검증 리스크 | 핵심 산출물 |
 |-------|------|------------|------------|
-| [Phase 0](phase-0-tauri-skeleton.md) | Tauri 뼈대 + YouTube 임베드 | YouTube iframe이 Tauri WebView2에서 동작하는가 | Tauri 앱 + 임베드 플레이어 + 재생 시간 추적, Tanstack Router, 2-View 구조, Tauri 풀스크린, lite-youtube A/B 테스트 |
-| [Phase 1](phase-1-subtitle-pipeline.md) | 자막 파이프라인 | timedtext API + Claude subprocess가 안정적인가 | 자막 fetch → 청크 분할 → Claude 번역 → JSON 결과 |
+| [Phase 0](phase-0-tauri-skeleton.md) | Tauri 뼈대 + YouTube 임베드 | YouTube iframe이 Tauri WebView2에서 동작하는가 | Tauri 앱 + react-youtube 임베드 플레이어 + 재생 시간 추적, Tanstack Router (hash history), 2-View 구조, Tauri 풀스크린, lite-youtube A/B 테스트 |
+| [Phase 1](phase-1-subtitle-pipeline.md) | 자막 파이프라인 | timedtext API + Claude subprocess가 안정적인가 | 자막 fetch (yt-transcript-rs) → 청크 분할 → Claude 번역 → JSON 결과 |
 | [Phase 2](phase-2-integration-cache.md) | 통합 + 캐시 | 플레이어 + 번역 + 캐시가 매끄럽게 연결되는가 | 재생 중 자막 오버레이 + 키보드 단축키 + SQLite 캐시 + 재방문 즉시 로드 |
-| [Phase 3](phase-3-buffering-polish.md) | 버퍼링 + 완성 | 사전 버퍼링이 체감 지연 없이 동작하는가 | Buffer Manager + Seek 처리 + 에러 핸들링 + Tauri 풀스크린 자막 유지 + 전체 AC 통과 |
+| [Phase 3](phase-3-buffering-polish.md) | 버퍼링 + 완성 | 사전 버퍼링이 체감 지연 없이 동작하는가 | Buffer Manager + Seek 처리 + 에러 핸들링 + Tauri 풀스크린 자막 유지 + Vitest + Playwright 테스트 + 전체 AC 통과 |
 
 ## 의존성 체인
 
@@ -52,3 +52,4 @@ Phase 1 ─────→ Phase 2 ─────→ Phase 3
 
 - [POC 기획서](../poc.md) — 초기 POC 설계
 - [PRD](../prd.md) — Deep Interview 기반 요구사항 정의 (모호성 9%)
+- [기술 스택](../tech-stack.md) — 라이브러리 선택 근거, 아키텍처 다이어그램, 테스트 전략

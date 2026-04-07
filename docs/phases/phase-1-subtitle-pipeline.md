@@ -17,19 +17,19 @@ YouTube 영상의 자막을 실시간으로 한국어 번역하는 핵심 파이
 
 ## 구현 범위
 
-### 1. YouTube timedtext API 자막 fetch (Rust)
-- [ ] YouTube video ID 파싱 (URL에서 `v=` 파라미터 추출)
-- [ ] timedtext API endpoint 호출: `https://www.youtube.com/api/timedtext?v={video_id}&lang=en`
-- [ ] XML 응답 파싱: `<text start="7.58" dur="4">` 형식 추출
-- [ ] 자막 데이터 구조 정의: `{text: String, start: f64, duration: f64}`
-- [ ] 자막 없는 영상 감지 및 에러 처리
-- [ ] 중복 자막 제거 (YouTube API 응답의 중복)
+### 1. YouTube 자막 fetch — `yt-transcript-rs` crate (Rust)
+- [ ] `yt-transcript-rs` crate 의존성 추가 (`Cargo.toml`)
+- [ ] `TranscriptApi::get_transcript(video_id, &["en"])` 호출로 자막 fetch
+- [ ] 자막 데이터 구조 정의: `{text: String, start: f64, duration: f64}` (crate 반환값 매핑)
+- [ ] 자막 없는 영상 감지 및 에러 처리 (`yt-transcript-rs` 에러 → `AppError::CaptionFetch`)
+- [ ] 중복 자막 제거 (필요 시 후처리)
+- [ ] **참고**: timedtext API 직접 호출 불필요 — `yt-transcript-rs`가 내부적으로 처리
 
 ### 2. 자막 데이터 파싱
-- [ ] XML 파싱 라이브러리 선택 (e.g., `serde_xml_rs`, `quick-xml`)
-- [ ] `start` (초) + `dur` (duration) → 정규화된 `{start, end}` 변환
-- [ ] 특수문자 디코딩 (HTML entities: `&quot;`, `&amp;` 등)
+- [ ] `yt-transcript-rs` 반환값 → `{start, end}` 정규화 (`start + duration = end`)
+- [ ] 특수문자 디코딩 (HTML entities: `&quot;`, `&amp;` 등 — crate 미처리 시 `quick-xml` 보조 사용)
 - [ ] 빈 자막 라인 필터링
+- [ ] **참고**: XML 파싱은 `yt-transcript-rs`가 내부 처리. `quick-xml`은 커스텀 파싱이 필요한 경우에만 사용
 
 ### 3. 청크 분할 로직
 - [ ] 자막 라인 배열 → 시간 범위 기반 청크 생성
@@ -46,20 +46,20 @@ YouTube 영상의 자막을 실시간으로 한국어 번역하는 핵심 파이
 - [ ] 실패 시 에러 메시지: "Claude CLI not found. Please install Claude Code CLI and add to PATH"
 - [ ] Tauri 앱 시작 시 호출 (동기)
 
-#### 4b. execute(prompt: String) → 비동기 subprocess 생성
-- [ ] 명령어: `claude --print - --output-format stream-json`
-- [ ] stdin으로 번역 프롬프트 전송
-- [ ] stdout JSONL 스트리밍 수신 (라인 단위)
-- [ ] subprocess PID 저장 (graceful shutdown용)
+#### 4b. execute(prompt: String) → 비동기 subprocess 생성 (tauri-plugin-shell)
+- [ ] `app.shell().command("claude").args([...]).spawn()` 패턴 사용
+- [ ] `.env_remove("CLAUDECODE")` — nested session 방지 (필수)
+- [ ] `child.write(prompt.as_bytes())` 로 stdin 프롬프트 전송
+- [ ] `CommandEvent::Stdout(line)` 수신 → `app.emit("translation-chunk", &text)` 로 프론트 스트리밍
+- [ ] `CommandEvent::Terminated(status)` 수신 → 완료 이벤트 emit
 - [ ] 타임아웃 설정: 30초 (청크당)
-- [ ] 에러 처리: stderr 캡처, 사용자에게 전달
+- [ ] 에러 처리: `CommandEvent::Stderr` 캡처, `AppError::Process`로 변환
 
-#### 4c. graceful shutdown — SIGTERM → SIGKILL
-- [ ] subprocess 생성 시 타이머 시작
-- [ ] 타임아웃(30초) 초과 시 SIGTERM 전송
-- [ ] SIGTERM 후 3초 유예
-- [ ] 유예 시간 내 미종료 시 SIGKILL 전송
-- [ ] 종료 상태 로깅 (정상/타임아웃/강제 종료)
+#### 4c. graceful shutdown — tauri-plugin-shell 프로세스 정리
+- [ ] `tauri-plugin-shell`의 `Child` 핸들로 프로세스 관리
+- [ ] 타임아웃(30초) 초과 시 `child.kill()` 호출
+- [ ] 종료 상태 로깅 (`CommandEvent::Terminated` 의 exit code 확인)
+- [ ] **참고**: `std::process::Command` 직접 사용 대신 `tauri-plugin-shell` 사용으로 프로세스 자동 정리 보장
 
 ### 5. CLAUDECODE 환경변수 제거
 - [ ] 자식 프로세스 환경: 부모의 `CLAUDECODE` 제거
@@ -123,16 +123,26 @@ YouTube 영상의 자막을 실시간으로 한국어 번역하는 핵심 파이
 
 ## 기술 상세
 
-### YouTube timedtext API
+### YouTube 자막 fetch — `yt-transcript-rs`
+
+```rust
+use yt_transcript_rs::TranscriptApi;
+
+async fn fetch_transcript(video_id: &str) -> anyhow::Result<Vec<TranscriptEntry>> {
+    let api = TranscriptApi::new();
+    let transcript = api.get_transcript(video_id, &["en"]).await?;
+    Ok(transcript)
+}
+```
+
+- `yt-transcript-rs`가 timedtext API 호출 및 XML 파싱을 내부적으로 처리
+- `TranscriptEntry { text, start, duration }` 구조체 반환
+- `quick-xml`은 커스텀 XML 파싱이 추가로 필요한 경우에만 직접 사용
+
+**레거시 참고** (직접 구현 불필요):
 ```
 엔드포인트: https://www.youtube.com/api/timedtext?v={video_id}&lang=en
-응답: XML
-<transcript>
-  <text start="7.58" dur="4">Hello everyone, welcome</text>
-  <text start="11.58" dur="3">to today's lecture</text>
-</transcript>
-
-참고: API 키 불필요, 공개 영상만 접근 가능
+응답: XML — <text start="7.58" dur="4">Hello everyone, welcome</text>
 ```
 
 ### Claude CLI 명령어
@@ -144,22 +154,83 @@ echo "{prompt_text}" | claude --print - --output-format stream-json --verbose
 - `--verbose`: 디버깅용 (선택사항, Phase 1에서는 로그 용도)
 
 ### Rust 라이브러리
-- **subprocess**: `std::process::Command` (기본)
-- **XML 파싱**: `quick-xml` 또는 `serde_xml_rs`
+- **자막 fetch**: `yt-transcript-rs` — YouTube 자막 전용 crate (timedtext API + XML 파싱 내장)
+- **subprocess**: `tauri-plugin-shell` — spawn/stream/kill, Tauri 이벤트 통합
+- **XML 파싱**: `quick-xml` — `yt-transcript-rs` 미처리 커스텀 파싱 시에만 사용
 - **JSON 파싱/직렬화**: `serde_json`
+- **에러 처리**: `thiserror` (커맨드 경계 구조화 에러) + `anyhow` (내부 로직)
 - **정규식**: `regex` (video ID 추출)
-- **시간 관리**: `std::time::{Duration, Instant}` (타임아웃)
+- **타입 안전성**: `tauri-specta` v2 — Rust 커맨드 → TypeScript 타입 자동 생성
 
-### ServerAdapter 인터페이스 (유사 Paperclip 패턴)
+### 에러 처리 패턴 (thiserror + anyhow)
+
 ```rust
+use thiserror::Error;
+use serde::Serialize;
+
+/// 프론트엔드에 전달되는 구조화된 에러 (tauri 커맨드 경계)
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "kind", content = "message")]
+pub enum AppError {
+    #[error("자막을 가져올 수 없습니다: {0}")]
+    CaptionFetch(String),
+    #[error("번역 중 오류가 발생했습니다: {0}")]
+    Translation(String),
+    #[error("Claude CLI를 찾을 수 없습니다: {0}")]
+    EnvironmentCheck(String),
+    #[error("프로세스 오류: {0}")]
+    Process(String),
+}
+
+// 내부 로직: anyhow 사용 → 커맨드 경계에서 AppError로 변환
+#[tauri::command]
+#[specta::specta]
+async fn fetch_subtitles(video_id: String) -> Result<Vec<Subtitle>, AppError> {
+    internal_fetch(&video_id)
+        .await
+        .map_err(|e| AppError::CaptionFetch(e.to_string()))
+}
+```
+
+### ServerAdapter 인터페이스 (유사 Paperclip 패턴, tauri-plugin-shell 기반)
+
+```rust
+use tauri_plugin_shell::ShellExt;
+
 trait ServerAdapter {
-    fn test_environment() -> Result<(), String>;
-    fn execute(&self, prompt: String) -> Result<AsyncChild, String>;
-    fn graceful_shutdown(child: &mut AsyncChild, timeout_secs: u64) -> Result<(), String>;
+    async fn test_environment(&self) -> Result<(), AppError>;
+    async fn execute(&self, app: &tauri::AppHandle, prompt: String) -> Result<(), AppError>;
+    async fn shutdown(&self, child: Child) -> Result<(), AppError>;
 }
 
 struct ClaudeServerAdapter;
-impl ServerAdapter for ClaudeServerAdapter { ... }
+
+impl ServerAdapter for ClaudeServerAdapter {
+    async fn execute(&self, app: &tauri::AppHandle, prompt: String) -> Result<(), AppError> {
+        let shell = app.shell();
+        let (mut rx, child) = shell
+            .command("claude")
+            .args(["--print", "-", "--output-format", "stream-json"])
+            .env_remove("CLAUDECODE")
+            .spawn()
+            .map_err(|e| AppError::Process(e.to_string()))?;
+
+        child.write(prompt.as_bytes())
+            .map_err(|e| AppError::Process(e.to_string()))?;
+
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) => {
+                    let text = String::from_utf8_lossy(&line);
+                    let _ = app.emit("translation-chunk", &*text);
+                }
+                CommandEvent::Terminated(_) => break,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
 ```
 
 ### 프롬프트 예시

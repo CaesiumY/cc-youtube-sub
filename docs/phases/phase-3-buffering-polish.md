@@ -213,23 +213,37 @@ impl TranslationBufferManager {
     }
 }
 
-// src-tauri/src/error_handler.rs
-pub enum TranslationError {
-    NoSubtitles,           // 자막 없음
-    RateLimitExceeded,     // 한도 초과
-    CliNotFound,           // CLI 미설치
-    ProcessCrashed,        // 프로세스 비정상 종료
-    NetworkTimeout,        // 네트워크 타임아웃
+// src-tauri/src/error.rs
+// thiserror로 구조화된 AppError — Tauri 커맨드 경계에서 Serialize됨
+// React에서 { kind: 'CaptionFetch', message: '...' } 형태로 수신
+use thiserror::Error;
+use serde::Serialize;
+
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "kind", content = "message")]
+pub enum AppError {
+    #[error("자막을 가져올 수 없습니다: {0}")]
+    CaptionFetch(String),       // NoSubtitles 포함
+
+    #[error("번역 중 오류가 발생했습니다: {0}")]
+    Translation(String),        // RateLimitExceeded, ProcessCrashed 포함
+
+    #[error("데이터베이스 오류: {0}")]
+    Database(String),
+
+    #[error("Claude CLI를 찾을 수 없습니다: {0}")]
+    EnvironmentCheck(String),   // CliNotFound
+
+    #[error("프로세스 오류: {0}")]
+    Process(String),            // NetworkTimeout 포함
 }
 
-pub fn handle_error(error: TranslationError) -> String {
-    match error {
-        TranslationError::NoSubtitles => "이 영상에는 자막이 없습니다. 다른 영상을 시도해주세요.".to_string(),
-        TranslationError::RateLimitExceeded => "Claude Code 구독 한도를 초과했습니다. 나중에 다시 시도해주세요.".to_string(),
-        TranslationError::CliNotFound => "Claude Code CLI가 설치되지 않았습니다. `npm install -g @anthropic-ai/claude-code` 실행 후 다시 시도해주세요.".to_string(),
-        TranslationError::ProcessCrashed => "번역 중 오류가 발생했습니다. 자막을 다시 로드합니다.".to_string(),
-        TranslationError::NetworkTimeout => "네트워크 연결이 끊겼습니다. 다시 시도해주세요.".to_string(),
-    }
+// 내부 로직은 anyhow 사용, 커맨드 경계에서 AppError로 변환
+#[tauri::command]
+async fn fetch_subtitles(video_id: String) -> Result<Vec<Subtitle>, AppError> {
+    internal_fetch(&video_id)
+        .await
+        .map_err(|e| AppError::CaptionFetch(e.to_string()))
 }
 ```
 
@@ -310,10 +324,14 @@ useEffect(() => {
   - [ ] 60분 영상 전체 재생 → 자막 끊김 없음
   - [ ] 메모리 누수 검증 (시작 vs 종료 메모리 < 50MB 차이)
 - [ ] 전체 15개 Acceptance Criteria 검증: 모두 PASS
-- [ ] TypeScript strict 모드 + ESLint: 타입 에러 없음
-- [ ] Rust 백엔드: 컴파일 성공, 런타임 panic 없음
+- [ ] TypeScript strict 모드 + Biome: 타입 에러 없음
+- [ ] Rust 백엔드: 컴파일 성공, 런타임 panic 없음, `cargo test` 전체 통과
 - [ ] UI: 로딩 표시, 에러 메시지 정상 렌더링
-- [ ] 빌드 성공 (`npm run build` / `tauri build`)
+- [ ] 빌드 성공 (`pnpm build` / `tauri build`)
+- [ ] **테스트 완료**:
+  - [ ] Vitest: React 핵심 훅 단위 테스트 통과 (usePlayerSync, useTranslation, useSubtitleCache)
+  - [ ] Playwright + CDP: Tauri WebView2에 연결하여 "URL 입력 → 자막 표시" E2E 플로우 통과
+  - [ ] GitHub Actions CI: frontend(Vitest) + backend(cargo test) + e2e(Playwright) 잡 모두 green
 
 ## 다음 단계 의존성
 
@@ -322,6 +340,10 @@ useEffect(() => {
 1. **프로덕션 배포**: 빌드된 .exe를 배포 가능한 형태로 패키징
 2. **문서화**: README, 설치 가이드, 사용자 매뉴얼 작성
 3. **v1 로드맵**: 사용자 계정, 설정 저장, 시청 이력, 다국어 지원 등 기획
+4. **GitHub Actions CI** (`.github/workflows/ci.yml`):
+   - `frontend` 잡: Vitest 단위 테스트 + Biome lint
+   - `backend` 잡: `cargo test`
+   - `e2e` 잡 (windows-latest): `tauri build` → Playwright + CDP로 WebView2 E2E 테스트
 
 ## 실패 시 대안
 

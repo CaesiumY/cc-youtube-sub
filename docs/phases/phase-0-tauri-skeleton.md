@@ -22,9 +22,9 @@ YouTube iframe API가 Tauri WebView2(Windows) 및 WebKit(macOS)에서 정상 작
 ## 구현 범위
 
 - [ ] **Tauri 2.x + React + TypeScript + Vite 프로젝트 초기화**
-  - `npm create tauri-app` 으로 scaffolding
+  - `pnpm create tauri-app` 으로 scaffolding (패키지 매니저: pnpm)
   - React + TypeScript + Vite 템플릿 선택
-  - Tauri CLI 1.6+ 설치
+  - Tauri CLI 2.x 설치
 
 - [ ] **shadcn/ui Luma 프리셋 + Pretendard 폰트 설정**
   - shadcn/ui 설치 및 Luma (Neutral OKLCH) 테마 적용
@@ -33,9 +33,24 @@ YouTube iframe API가 Tauri WebView2(Windows) 및 WebKit(macOS)에서 정상 작
 
 - [ ] **Tanstack Router 설정 (`/` → `/watch/$videoId`)**
   - `@tanstack/react-router` 설치
+  - **hash history 사용** (`createHashHistory`) — Tauri 파일 프로토콜 호환성 필수
   - `/` 경로: Home View (URL 입력)
   - `/watch/$videoId` 경로: Player View (YouTube 플레이어)
   - Home → Player fade 전환 (200ms out → 300ms in)
+
+- [ ] **Tanstack Query + Zustand 상태 관리 초기 설정**
+  - `@tanstack/react-query` + `zustand` 설치
+  - `QueryClientProvider` 루트에 설정
+  - Zustand 스토어 기본 구조 정의 (`currentTime`, `isFullscreen` 등)
+
+- [ ] **motion v12 뷰 전환 애니메이션 설정**
+  - `motion` 패키지 설치 (`motion/react`)
+  - `AnimatePresence`로 Home ↔ Player 페이드 전환 구현 (200ms out → 300ms in)
+
+- [ ] **tauri-specta 타입 생성 설정**
+  - `tauri-specta` v2 설치 (Rust + TypeScript)
+  - Rust 커맨드에 `#[specta::specta]` 매크로 적용
+  - `export_bindings!()` 매크로로 TypeScript 타입 자동 생성
 
 - [ ] **Home View: URL 입력 중앙 표시 (브랜딩 없음)**
   - 텍스트 입력 필드 (예: `https://www.youtube.com/watch?v=...`)
@@ -48,11 +63,12 @@ YouTube iframe API가 Tauri WebView2(Windows) 및 WebKit(macOS)에서 정상 작
   - YouTube iframe 전체 화면으로 표시
   - 영상 아래 2px 얇은 진행률 바 placeholder (Phase 1에서 연결)
 
-- [ ] **YouTube iframe API 임베드 플레이어 구현**
-  - `<iframe>` 태그로 `https://www.youtube.com/embed/{videoId}` 렌더링
-  - iframe API 스크립트 로드 및 초기화
+- [ ] **YouTube 플레이어 구현 (`react-youtube` 기본)**
+  - `react-youtube` 설치 및 사용 (기본 구현체)
+  - `<YouTube videoId={videoId} opts={{ playerVars: { fs: 0 } }} onReady={onReady} />` 패턴
+  - `onReady` 콜백으로 `YT.Player` 인스턴스 획득 → `playerRef`에 저장
   - 플레이어 상태 리스너 설정 (`onStateChange`, `onError`)
-  - **lite-youtube vs 직접 iframe API A/B 테스트 구조**: `PLAYER_MODE` 환경 변수로 전환 가능하게 분기
+  - **lite-youtube 선택적 비교**: `VITE_PLAYER_MODE` 환경 변수로 전환 가능하게 분기 (`react-youtube` vs `lite-youtube`)
 
 - [ ] **getCurrentTime() 500ms 폴링으로 재생 시간 추적**
   - `setInterval(player.getCurrentTime(), 500)` 폴링 로직
@@ -71,7 +87,7 @@ YouTube iframe API가 Tauri WebView2(Windows) 및 WebKit(macOS)에서 정상 작
 
 - [ ] **개발 환경 설정**
   - TypeScript strict mode 활성화
-  - ESLint + Prettier 설정
+  - Biome 설정 (ESLint + Prettier 대체, `biome.json` 구성)
   - Tauri 핫 리로드 (`tauri dev`)
   - Vite 빌드 설정 확인
 
@@ -147,9 +163,11 @@ youtube-subtitle-for-claude/
 
 ```typescript
 // src/router.tsx
-import { createRouter, createRoute, createRootRoute } from '@tanstack/react-router';
+import { createRouter, createHashHistory, createRoute, createRootRoute } from '@tanstack/react-router';
 import { HomeView } from './routes/index';
 import { PlayerView } from './routes/watch.$videoId';
+
+const hashHistory = createHashHistory(); // Tauri 파일 프로토콜 호환 필수
 
 const rootRoute = createRootRoute();
 
@@ -167,7 +185,7 @@ const watchRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([homeRoute, watchRoute]);
 
-export const router = createRouter({ routeTree });
+export const router = createRouter({ routeTree, history: hashHistory });
 
 declare module '@tanstack/react-router' {
   interface Register {
@@ -214,17 +232,56 @@ Tauri 윈도우 풀스크린으로 대체하려면:
 const embedUrl = `https://www.youtube.com/embed/${videoId}?fs=0&enablejsapi=1`;
 ```
 
-### lite-youtube vs 직접 iframe API A/B 테스트 구조
+### react-youtube 플레이어 구현 (기본)
+
+```tsx
+import YouTube, { YouTubeEvent } from 'react-youtube';
+import { useRef } from 'react';
+
+export function YouTubePlayer({ videoId }: { videoId: string }) {
+  const playerRef = useRef<YT.Player | null>(null);
+
+  const onReady = (event: YouTubeEvent) => {
+    playerRef.current = event.target;
+  };
+
+  const onStateChange = (event: YouTubeEvent) => {
+    // event.data: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
+  };
+
+  return (
+    <YouTube
+      videoId={videoId}
+      opts={{
+        width: '100%',
+        height: '100%',
+        playerVars: {
+          fs: 0,          // YouTube 자체 풀스크린 버튼 비활성화
+          autoplay: 0,
+          enablejsapi: 1,
+        },
+      }}
+      onReady={onReady}
+      onStateChange={onStateChange}
+      onError={(e) => console.error('YouTube player error:', e.data)}
+    />
+  );
+}
+```
+
+### lite-youtube 선택적 비교 구조
+
+`react-youtube`가 기본 구현체이며, 성능 비교가 필요한 경우 `VITE_PLAYER_MODE` 환경 변수로 전환:
 
 ```typescript
 // 환경 변수로 플레이어 구현체 전환
-const PLAYER_MODE = import.meta.env.VITE_PLAYER_MODE ?? 'iframe'; // 'iframe' | 'lite'
+const PLAYER_MODE = import.meta.env.VITE_PLAYER_MODE ?? 'react-youtube'; // 'react-youtube' | 'lite'
 
 export function YouTubePlayerWrapper({ videoId }: { videoId: string }) {
   if (PLAYER_MODE === 'lite') {
     return <LiteYouTubePlayer videoId={videoId} />;
   }
-  return <IframeAPIPlayer videoId={videoId} />;
+  return <YouTubePlayer videoId={videoId} />;
 }
 ```
 
@@ -232,90 +289,6 @@ export function YouTubePlayerWrapper({ videoId }: { videoId: string }) {
 - 초기 로딩 속도 (`PerformanceObserver` 측정)
 - Player API 안정성 (`getCurrentTime()` 폴링 성공률)
 - Tauri WebView2 호환성
-
-### YouTube iframe API 사용법
-
-**YouTube Player 컴포넌트 예시:**
-
-```typescript
-import { useEffect, useRef, useState } from 'react';
-
-interface YouTubePlayer {
-  getCurrentTime(): number;
-  playVideo(): void;
-  pauseVideo(): void;
-  getPlayerState(): number; // -1: unstarted, 0: ended, 1: playing, 2: paused, 3: buffering, 5: video cued
-}
-
-export function YouTubePlayer({ videoId }: { videoId: string }) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const playerRef = useRef<YouTubePlayer | null>(null);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [playerState, setPlayerState] = useState(-1);
-
-  useEffect(() => {
-    // 1. 전역 onYouTubeIframeAPIReady 콜백 설정
-    const tag = document.createElement('script');
-    tag.src = 'https://www.youtube.com/iframe_api';
-    document.body.appendChild(tag);
-
-    // 2. YT 객체가 로드되면 플레이어 초기화
-    (window as any).onYouTubeIframeAPIReady = () => {
-      if (!iframeRef.current) return;
-      
-      playerRef.current = new (window as any).YT.Player(iframeRef.current, {
-        height: '390',
-        width: '640',
-        videoId: videoId,
-        events: {
-          onReady: onPlayerReady,
-          onStateChange: onPlayerStateChange,
-          onError: onPlayerError,
-        },
-      });
-    };
-
-    return () => {
-      // cleanup
-    };
-  }, [videoId]);
-
-  // 3. 500ms 폴링: 현재 재생 시간 추적
-  useEffect(() => {
-    const pollInterval = setInterval(() => {
-      if (playerRef.current) {
-        const time = playerRef.current.getCurrentTime();
-        setCurrentTime(time);
-      }
-    }, 500);
-
-    return () => clearInterval(pollInterval);
-  }, []);
-
-  const onPlayerReady = (event: any) => {
-    console.log('YouTube player ready');
-    event.target.playVideo();
-  };
-
-  const onPlayerStateChange = (event: any) => {
-    setPlayerState(event.data);
-    console.log('Player state:', event.data);
-  };
-
-  const onPlayerError = (event: any) => {
-    console.error('YouTube player error:', event.data);
-  };
-
-  return (
-    <div>
-      <div ref={iframeRef}></div>
-      <div>
-        Current Time: {currentTime.toFixed(2)}s | State: {playerState}
-      </div>
-    </div>
-  );
-}
-```
 
 ### Tauri 설정 (tauri.conf.json)
 
@@ -351,14 +324,21 @@ WebView2 보안 정책에서 YouTube iframe 로드를 허용하려면:
 
 ### Rust 백엔드 기본 구조 (src-tauri/src/lib.rs)
 
+`tauri-specta`를 사용하여 Rust 커맨드 → TypeScript 타입 자동 생성:
+
 ```rust
+use tauri_specta::{collect_commands, ts};
+
+// #[specta::specta] 매크로로 타입 정보 추출
 #[tauri::command]
+#[specta::specta]
 fn fetch_subtitles(video_id: String) -> Result<String, String> {
-    // Phase 1에서 구현: YouTube timedtext API 호출
+    // Phase 1에서 구현: yt-transcript-rs 자막 fetch
     Ok(format!("Subtitles for video {}", video_id))
 }
 
 #[tauri::command]
+#[specta::specta]
 fn translate_chunk(text: String) -> Result<String, String> {
     // Phase 2에서 구현: Claude subprocess 번역
     Ok(format!("Translated: {}", text))
@@ -366,6 +346,11 @@ fn translate_chunk(text: String) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // tauri-specta: TypeScript 바인딩 생성 (개발 빌드에서만)
+    #[cfg(debug_assertions)]
+    ts::export(collect_commands![fetch_subtitles, translate_chunk], "../src/bindings.ts")
+        .expect("Failed to export TypeScript bindings");
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![fetch_subtitles, translate_chunk])
         .run(tauri::generate_context!())
@@ -408,11 +393,12 @@ pub fn run() {
 - [ ] 플레이어 상태 변화 감지 (재생/일시정지/버퍼링 이벤트 콘솔 출력)
 - [ ] F키로 Tauri 풀스크린 토글 동작 확인
 - [ ] 풀스크린에서 오버레이 영역(progress bar placeholder)이 가려지지 않음 확인
-- [ ] lite-youtube / iframe API 두 모드 모두 `VITE_PLAYER_MODE` 전환으로 동작 확인
-- [ ] Rust 백엔드 command 스켈레톤 작성 완료 (나중 호출용 준비)
-- [ ] TypeScript strict 모드에서 타입 에러 없음 (`npm run check` 또는 `tsc --noEmit` 통과)
+- [ ] react-youtube 기본 모드 동작 확인 (`VITE_PLAYER_MODE` 미설정 시 react-youtube 사용)
+- [ ] lite-youtube 비교 모드 전환 동작 확인 (`VITE_PLAYER_MODE=lite`)
+- [ ] Rust 백엔드 command 스켈레톤 작성 완료 + tauri-specta 바인딩 생성 확인 (`src/bindings.ts`)
+- [ ] TypeScript strict 모드에서 타입 에러 없음 (`pnpm biome check .` + `tsc --noEmit` 통과)
 - [ ] 개발 환경에서 핫 리로드 동작 확인 (파일 수정 → 즉시 새로고침)
-- [ ] 빌드 성공 (`npm run build` / `tauri build`)
+- [ ] 빌드 성공 (`pnpm build` / `pnpm tauri build`)
 
 ## 다음 Phase 의존성
 
