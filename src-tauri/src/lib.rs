@@ -1,7 +1,7 @@
-mod claude;
-mod error;
-mod subtitle;
-mod translate;
+pub mod claude;
+pub mod error;
+pub mod subtitle;
+pub mod translate;
 
 use error::AppError;
 use subtitle::chunk::split_into_chunks;
