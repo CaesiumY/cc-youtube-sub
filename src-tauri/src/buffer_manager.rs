@@ -77,6 +77,12 @@ pub struct BufferManager {
     state: Mutex<Option<BufferState>>,
 }
 
+impl Default for BufferManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BufferManager {
     pub fn new() -> Self {
         Self {
@@ -287,6 +293,7 @@ impl BufferManager {
 
     // ── 내부 메서드 ─────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_completion(
         &self,
         chunk_index: i32,
