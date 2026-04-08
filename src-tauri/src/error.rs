@@ -13,6 +13,7 @@ pub enum AppError {
     Translation(String),
 
     #[error("데이터베이스 오류: {0}")]
+    #[allow(dead_code)]
     Database(String),
 
     #[error("Claude CLI를 찾을 수 없습니다: {0}")]
@@ -20,4 +21,48 @@ pub enum AppError {
 
     #[error("프로세스 오류: {0}")]
     Process(String),
+}
+
+impl From<yt_transcript_rs::CouldNotRetrieveTranscript> for AppError {
+    fn from(e: yt_transcript_rs::CouldNotRetrieveTranscript) -> Self {
+        AppError::CaptionFetch(format!("video_id={}: {:?}", e.video_id, e.reason))
+    }
+}
+
+impl From<yt_transcript_rs::CookieError> for AppError {
+    fn from(e: yt_transcript_rs::CookieError) -> Self {
+        AppError::CaptionFetch(format!("HTTP 클라이언트 초기화 실패: {:?}", e))
+    }
+}
+
+impl From<serde_json::Error> for AppError {
+    fn from(e: serde_json::Error) -> Self {
+        AppError::Translation(format!("JSON 파싱 실패: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize_caption_fetch() {
+        let err = AppError::CaptionFetch("no captions".into());
+        let json = serde_json::to_string(&err).unwrap();
+        assert!(json.contains("\"kind\":\"CaptionFetch\""));
+        assert!(json.contains("\"message\":\"no captions\""));
+    }
+
+    #[test]
+    fn test_serialize_environment_check() {
+        let err = AppError::EnvironmentCheck("claude not found".into());
+        let json = serde_json::to_string(&err).unwrap();
+        assert!(json.contains("\"kind\":\"EnvironmentCheck\""));
+    }
+
+    #[test]
+    fn test_display_impl() {
+        let err = AppError::Process("timeout".into());
+        assert_eq!(err.to_string(), "프로세스 오류: timeout");
+    }
 }
