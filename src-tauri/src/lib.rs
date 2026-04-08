@@ -1,3 +1,4 @@
+pub mod buffer_manager;
 pub mod cache;
 pub mod claude;
 pub mod error;
@@ -8,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
 
+use buffer_manager::BufferManager;
 use cache::{compute_chunk_hash, TranslationCache};
 use error::AppError;
 use subtitle::chunk::split_into_chunks;
@@ -101,6 +103,56 @@ fn get_chunk_hash(lines: Vec<SubtitleLine>) -> String {
     compute_chunk_hash(&lines)
 }
 
+// ── 버퍼 매니저 커맨드 ──────────────────────────────
+
+/// 새 영상의 버퍼 매니저를 초기화
+#[tauri::command]
+async fn init_buffer(
+    video_id: String,
+    chunks: Vec<SubtitleChunk>,
+    video_info: Option<VideoInfo>,
+    cached_indices: Vec<i32>,
+    buffer: tauri::State<'_, Arc<BufferManager>>,
+) -> Result<(), AppError> {
+    buffer.init(video_id, chunks, video_info, cached_indices).await;
+    Ok(())
+}
+
+/// 재생 위치 업데이트 → 사전 버퍼링 스케줄링
+#[tauri::command]
+async fn update_playback_position(
+    current_time: f64,
+    buffer: tauri::State<'_, Arc<BufferManager>>,
+    cache: tauri::State<'_, Arc<TranslationCache>>,
+    app: tauri::AppHandle,
+) -> Result<(), AppError> {
+    let buffer = Arc::clone(buffer.inner());
+    let cache = Arc::clone(cache.inner());
+    buffer.update_position(current_time, cache, app).await
+}
+
+/// Seek 이벤트 처리
+#[tauri::command]
+async fn on_seek(
+    target_time: f64,
+    buffer: tauri::State<'_, Arc<BufferManager>>,
+    cache: tauri::State<'_, Arc<TranslationCache>>,
+    app: tauri::AppHandle,
+) -> Result<(), AppError> {
+    let buffer = Arc::clone(buffer.inner());
+    let cache = Arc::clone(cache.inner());
+    buffer.on_seek(target_time, cache, app).await
+}
+
+/// 버퍼링 취소 (영상 전환 시)
+#[tauri::command]
+async fn cancel_buffering(
+    buffer: tauri::State<'_, Arc<BufferManager>>,
+) -> Result<(), AppError> {
+    buffer.cancel().await;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 앱 데이터 디렉토리에 SQLite DB 생성
@@ -117,6 +169,7 @@ pub fn run() {
                 .expect("SQLite 캐시 초기화 실패");
 
             app.manage(Arc::new(cache));
+            app.manage(Arc::new(BufferManager::new()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -128,6 +181,10 @@ pub fn run() {
             save_to_cache,
             batch_query_cache,
             get_chunk_hash,
+            init_buffer,
+            update_playback_position,
+            on_seek,
+            cancel_buffering,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

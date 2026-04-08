@@ -5,6 +5,8 @@ import {
   fetchSubtitles,
   fetchVideoInfo,
   getChunkHash,
+  initBuffer,
+  isTauri,
   saveToCache,
   translateChunk,
 } from "../lib/tauri-commands";
@@ -142,6 +144,7 @@ export function useTranslationPipeline(videoId: string) {
       const cached = await batchQueryCache(videoId, hashArray);
 
       // 캐시 hit 처리
+      const cachedIndices: number[] = [];
       for (const { index, hash } of hashes) {
         const cachedJson = cached[hash];
         if (cachedJson) {
@@ -149,15 +152,21 @@ export function useTranslationPipeline(videoId: string) {
             const entries = JSON.parse(cachedJson);
             useTranslationStore.getState().addTranslations(entries);
             useTranslationStore.getState().markChunkStatus(index, "cached");
+            cachedIndices.push(index);
           } catch {
             // 파싱 실패 → pending으로 유지 (재번역)
           }
         }
       }
 
-      // 번역 큐 시작 (max 2 동시)
-      for (let i = 0; i < MAX_CONCURRENT; i++) {
-        processQueue();
+      if (isTauri()) {
+        // Phase 3: Rust 버퍼 매니저가 재생 위치 기반 번역 스케줄링
+        await initBuffer(videoId, chunks, videoInfo ?? null, cachedIndices);
+      } else {
+        // 브라우저 개발 모드: 기존 프론트엔드 큐
+        for (let i = 0; i < MAX_CONCURRENT; i++) {
+          processQueue();
+        }
       }
     };
 

@@ -7,10 +7,11 @@ import { useTranslationStore } from "../stores/translation-store";
 /**
  * 영상 위 자막 오버레이 — YouTube 컨트롤 바 바로 위에 표시
  *
- * - 현재 재생 시간에 해당하는 번역 자막을 이진 검색으로 찾아 표시
- * - AnimatePresence로 fade-in/out 전환
- * - T키로 원본 텍스트 토글, +/-로 폰트 크기 조절
- * - 번역 대기 중이면 "번역 준비 중..." 표시
+ * Phase 3 개선:
+ * - shimmer 애니메이션: seek 후 캐시 miss 시 로딩 표시
+ * - 에러 메시지: 번역 실패 시 오버레이 내부에 표시
+ * - fade-in/out: AnimatePresence로 자연스러운 자막 전환
+ * - T키: 원본 텍스트 토글, +/-: 폰트 크기 조절
  */
 export function SubtitleOverlay() {
   const currentTime = usePlayerStore((s) => s.currentTime);
@@ -19,19 +20,17 @@ export function SubtitleOverlay() {
   const translations = useTranslationStore((s) => s.translations);
   const isLoading = useTranslationStore((s) => s.isLoading);
   const totalChunks = useTranslationStore((s) => s.totalChunks);
+  const error = useTranslationStore((s) => s.error);
 
   const currentEntry = useMemo(
     () => findSubtitleAt(translations, currentTime),
     [translations, currentTime],
   );
 
-  // 아직 자막을 로드하지 않은 상태
   if (totalChunks === 0 && !isLoading) return null;
 
   return (
-    <div
-      className="pointer-events-none absolute inset-x-0 bottom-16 z-10 flex justify-center px-4"
-    >
+    <div className="pointer-events-none absolute inset-x-0 bottom-16 z-10 flex justify-center px-4">
       <AnimatePresence mode="wait">
         {currentEntry ? (
           <motion.div
@@ -67,6 +66,20 @@ export function SubtitleOverlay() {
               </p>
             )}
           </motion.div>
+        ) : error ? (
+          <motion.div
+            key="error"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="max-w-[85%] rounded-md px-4 py-2"
+            style={{
+              backgroundColor: "rgba(127, 29, 29, 0.85)",
+            }}
+          >
+            <p className="text-center text-sm text-red-200">{error}</p>
+          </motion.div>
         ) : isLoading ? (
           <motion.div
             key="loading"
@@ -79,13 +92,10 @@ export function SubtitleOverlay() {
               backgroundColor: "var(--subtitle-bg, rgba(0, 0, 0, 0.75))",
             }}
           >
-            <p
-              className="text-center text-sm"
-              style={{
-                color: "var(--subtitle-original, #8a8a8a)",
-              }}
-            >
-              번역 준비 중...
+            <p className="text-center text-sm text-zinc-400">
+              <span className="inline-block animate-pulse">
+                번역 준비 중...
+              </span>
             </p>
           </motion.div>
         ) : null}

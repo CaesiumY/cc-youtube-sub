@@ -44,7 +44,7 @@ export interface AppError {
 
 // ── Tauri 환경 감지 ──────────────────────────────────
 
-function isTauri(): boolean {
+export function isTauri(): boolean {
   return "__TAURI_INTERNALS__" in window;
 }
 
@@ -154,4 +154,42 @@ export async function batchQueryCache(
     videoId,
     chunkHashes,
   });
+}
+
+// ── 버퍼 매니저 커맨드 (Phase 3) ────────────────────
+
+export async function initBuffer(
+  videoId: string,
+  chunks: SubtitleChunk[],
+  videoInfo: VideoInfo | null,
+  cachedIndices: number[],
+): Promise<void> {
+  if (!isTauri()) return;
+  const invoke = await getInvoke();
+  return invoke<void>("init_buffer", {
+    videoId,
+    chunks,
+    videoInfo,
+    cachedIndices,
+  });
+}
+
+export async function updatePlaybackPosition(
+  currentTime: number,
+): Promise<void> {
+  if (!isTauri()) return;
+  const invoke = await getInvoke();
+  return invoke<void>("update_playback_position", { currentTime });
+}
+
+export async function onSeek(targetTime: number): Promise<void> {
+  if (!isTauri()) return;
+  const invoke = await getInvoke();
+  return invoke<void>("on_seek", { targetTime });
+}
+
+export async function cancelBuffering(): Promise<void> {
+  if (!isTauri()) return;
+  const invoke = await getInvoke();
+  return invoke<void>("cancel_buffering");
 }

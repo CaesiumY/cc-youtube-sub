@@ -1,12 +1,15 @@
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ErrorModal } from "../components/error-modal";
 import { ProgressBar } from "../components/progress-bar";
 import { SubtitleOverlay } from "../components/subtitle-overlay";
 import { YouTubePlayer } from "../components/youtube-player";
+import { useBufferManager } from "../hooks/use-buffer-manager";
 import { useFullscreen } from "../hooks/use-fullscreen";
 import { useKeyboardShortcuts } from "../hooks/use-keyboard-shortcuts";
 import { useTranslationPipeline } from "../hooks/use-translation-pipeline";
+import { checkEnvironment, isTauri } from "../lib/tauri-commands";
 import { usePlayerStore } from "../stores/player-store";
 
 export function PlayerView() {
@@ -15,10 +18,18 @@ export function PlayerView() {
   const currentTime = usePlayerStore((s) => s.currentTime);
   const playerState = usePlayerStore((s) => s.playerState);
   const playerRef = useRef<YT.Player | null>(null);
+  const [cliMissing, setCliMissing] = useState(false);
+
+  // Claude CLI 환경 검증 (Tauri 환경에서만)
+  useEffect(() => {
+    if (!isTauri()) return;
+    checkEnvironment().catch(() => setCliMissing(true));
+  }, []);
 
   // 핵심 훅
   useFullscreen();
   useKeyboardShortcuts(playerRef);
+  useBufferManager();
   const pipeline = useTranslationPipeline(videoId);
 
   const handleBack = () => {
@@ -60,6 +71,8 @@ export function PlayerView() {
           {pipeline.error && <span className="text-red-400"> | ERR</span>}
         </div>
       )}
+      {/* CLI 미설치 모달 */}
+      <ErrorModal open={cliMissing} />
     </div>
   );
 }
