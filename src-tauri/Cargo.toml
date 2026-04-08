@@ -1,5 +1,5 @@
 [package]
-name = "youtube-subtitle-for-claude"
+name = "cc-youtube-sub"
 version = "0.1.0"
 edition = "2021"
 

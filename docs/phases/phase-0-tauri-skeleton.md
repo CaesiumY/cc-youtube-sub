@@ -107,7 +107,7 @@ YouTube iframe API가 Tauri WebView2(Windows) 및 WebKit(macOS)에서 정상 작
 ### 프로젝트 구조
 
 ```
-youtube-subtitle-for-claude/
+cc-youtube-sub/
 ├── src-tauri/
 │   ├── src/
 │   │   ├── lib.rs           # Rust 백엔드 (command 정의)
