@@ -4,23 +4,24 @@ import { usePlayerStore } from "../stores/player-store";
 
 interface YouTubePlayerProps {
   videoId: string;
+  playerRef?: React.MutableRefObject<YT.Player | null>;
 }
 
-export function YouTubePlayer({ videoId }: YouTubePlayerProps) {
-  const playerRef = useRef<YT.Player | null>(null);
+export function YouTubePlayer({ videoId, playerRef }: YouTubePlayerProps) {
+  const internalRef = useRef<YT.Player | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const setCurrentTime = usePlayerStore((s) => s.setCurrentTime);
   const setPlayerState = usePlayerStore((s) => s.setPlayerState);
 
-  // 500ms 폴링으로 재생 시간 추적
+  // 200ms 폴링으로 재생 시간 추적 (자막 동기화 정확도)
   const startPolling = useCallback(() => {
     if (intervalRef.current) return;
     intervalRef.current = setInterval(() => {
-      const time = playerRef.current?.getCurrentTime();
+      const time = internalRef.current?.getCurrentTime();
       if (time !== undefined) {
         setCurrentTime(time);
       }
-    }, 500);
+    }, 200);
   }, [setCurrentTime]);
 
   const stopPolling = useCallback(() => {
@@ -36,7 +37,8 @@ export function YouTubePlayer({ videoId }: YouTubePlayerProps) {
   }, [stopPolling]);
 
   const onReady = (event: YouTubeEvent) => {
-    playerRef.current = event.target;
+    internalRef.current = event.target;
+    if (playerRef) playerRef.current = event.target;
     startPolling();
   };
 

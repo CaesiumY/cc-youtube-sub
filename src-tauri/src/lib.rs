@@ -1,8 +1,14 @@
+pub mod cache;
 pub mod claude;
 pub mod error;
 pub mod subtitle;
 pub mod translate;
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use tauri::Manager;
+
+use cache::{compute_chunk_hash, TranslationCache};
 use error::AppError;
 use subtitle::chunk::split_into_chunks;
 use subtitle::fetch;
@@ -56,15 +62,72 @@ async fn translate_chunk(
     Ok(entries)
 }
 
+// ── 캐시 커맨드 ──────────────────────────────────────
+
+/// 단일 청크 캐시 조회
+#[tauri::command]
+async fn query_cache(
+    video_id: String,
+    chunk_hash: String,
+    cache: tauri::State<'_, Arc<TranslationCache>>,
+) -> Result<Option<String>, AppError> {
+    cache.query(&video_id, &chunk_hash)
+}
+
+/// 번역 결과를 캐시에 저장
+#[tauri::command]
+async fn save_to_cache(
+    video_id: String,
+    chunk_hash: String,
+    translated_json: String,
+    cache: tauri::State<'_, Arc<TranslationCache>>,
+) -> Result<(), AppError> {
+    cache.save(&video_id, &chunk_hash, &translated_json)
+}
+
+/// 여러 청크 캐시 일괄 조회 (재방문 시)
+#[tauri::command]
+async fn batch_query_cache(
+    video_id: String,
+    chunk_hashes: Vec<String>,
+    cache: tauri::State<'_, Arc<TranslationCache>>,
+) -> Result<HashMap<String, String>, AppError> {
+    cache.batch_query(&video_id, &chunk_hashes)
+}
+
+/// 청크의 캐시 해시를 계산
+#[tauri::command]
+fn get_chunk_hash(lines: Vec<SubtitleLine>) -> String {
+    compute_chunk_hash(&lines)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 앱 데이터 디렉토리에 SQLite DB 생성
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            let app_dir = app
+                .path()
+                .app_data_dir()
+                .expect("앱 데이터 디렉토리를 찾을 수 없습니다");
+            let db_path = app_dir.join("translation_cache.db");
+
+            let cache = TranslationCache::new(db_path)
+                .expect("SQLite 캐시 초기화 실패");
+
+            app.manage(Arc::new(cache));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             check_environment,
             fetch_subtitles,
             fetch_video_info,
             translate_chunk,
+            query_cache,
+            save_to_cache,
+            batch_query_cache,
+            get_chunk_hash,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
