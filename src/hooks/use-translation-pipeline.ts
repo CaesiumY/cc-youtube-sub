@@ -125,9 +125,10 @@ export function useTranslationPipeline(videoId: string) {
     initializedRef.current = true;
 
     const init = async () => {
-      store.startLoading(videoId);
-      store.setChunks(chunks);
-      if (videoInfo) store.setVideoInfo(videoInfo);
+      const s = useTranslationStore.getState();
+      s.startLoading(videoId);
+      s.setChunks(chunks);
+      if (videoInfo) s.setVideoInfo(videoInfo);
 
       // 모든 청크의 해시 계산
       const hashes = await Promise.all(
@@ -183,16 +184,16 @@ export function useTranslationPipeline(videoId: string) {
     };
 
     init().catch((err) => {
-      store.setError(String(err));
+      useTranslationStore.getState().setError(String(err));
     });
-  }, [chunks, videoInfo, videoId, store, processQueue]);
+  }, [chunks, videoInfo, videoId, processQueue]);
 
   // videoInfo 늦게 도착 시 store 업데이트
   useEffect(() => {
-    if (videoInfo && store.videoId === videoId) {
-      store.setVideoInfo(videoInfo);
+    if (videoInfo && useTranslationStore.getState().videoId === videoId) {
+      useTranslationStore.getState().setVideoInfo(videoInfo);
     }
-  }, [videoInfo, videoId, store]);
+  }, [videoInfo, videoId]);
 
   // cleanup on videoId change
   useEffect(() => {
