@@ -145,9 +145,10 @@ impl BufferManager {
         // 이렇게 하면 번역 실행 중 락이 잡히지 않는다.
         let tasks_to_spawn = {
             let mut lock = self.state.lock().await;
-            let state = lock
-                .as_mut()
-                .ok_or_else(|| AppError::Process("버퍼 매니저가 초기화되지 않았습니다".into()))?;
+            let state = match lock.as_mut() {
+                Some(s) => s,
+                None => return Ok(()), // 아직 초기화 전 — 다음 폴링에서 재시도
+            };
 
             state.current_position = current_time;
 
@@ -269,9 +270,10 @@ impl BufferManager {
     ) -> Result<(), AppError> {
         {
             let mut lock = self.state.lock().await;
-            let state = lock
-                .as_mut()
-                .ok_or_else(|| AppError::Process("버퍼 매니저가 초기화되지 않았습니다".into()))?;
+            let state = match lock.as_mut() {
+                Some(s) => s,
+                None => return Ok(()), // 아직 초기화 전 — 무시
+            };
 
             state.session_id += 1;
             state.current_position = target_time;

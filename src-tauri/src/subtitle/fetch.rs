@@ -33,9 +33,21 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
         AppError::CaptionFetch(format!("영어 자막을 찾을 수 없습니다: {:?}", e.reason))
     })?;
 
-    // Transcript.url로 직접 XML fetch
-    let client = reqwest::Client::new();
-    let response = client
+    // 2-a: Transcript::fetch() 시도 (라이브러리 내장 — InnerTube 재요청)
+    let lib_client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+        .unwrap_or_default();
+
+    if let Ok(fetched) = transcript.fetch(&lib_client, false).await {
+        let lines = normalize_transcript(&fetched.snippets);
+        if !lines.is_empty() {
+            return Ok(lines);
+        }
+    }
+
+    // 2-b: Transcript.url로 직접 XML fetch (User-Agent 포함)
+    let response = lib_client
         .get(&transcript.url)
         .send()
         .await
