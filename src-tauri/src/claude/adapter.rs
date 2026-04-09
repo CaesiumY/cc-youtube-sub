@@ -19,10 +19,15 @@ const CMD_NOT_FOUND_EXIT_CODE: i32 = 9009;
 fn build_claude_command(args: &[&str]) -> Command {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        // GUI 앱에서 cmd.exe 자식이 새 콘솔 창을 할당하는 것을 방지
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
         let mut cmd = Command::new("cmd");
         let mut full_args = vec!["/c", "claude"];
         full_args.extend_from_slice(args);
         cmd.args(&full_args);
+        cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
     }
     #[cfg(not(target_os = "windows"))]
