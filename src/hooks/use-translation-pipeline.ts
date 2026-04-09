@@ -184,6 +184,7 @@ export function useTranslationPipeline(videoId: string) {
     };
 
     init().catch((err) => {
+      console.error("[translation-pipeline] init failed:", err);
       useTranslationStore.getState().setError(String(err));
     });
   }, [chunks, videoInfo, videoId, processQueue]);

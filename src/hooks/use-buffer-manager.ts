@@ -74,6 +74,7 @@ export function useBufferManager() {
       unlisteners.push(
         listen<SubtitleUpdateEvent>("subtitle-update", (event) => {
           const { entries } = event.payload;
+          console.log("[subtitle-update] chunk entries:", entries.length);
           useTranslationStore.getState().addTranslations(entries);
         }),
       );
@@ -90,7 +91,8 @@ export function useBufferManager() {
 
       unlisteners.push(
         listen<BufferErrorEvent>("buffer-error", (event) => {
-          const { error, retryable } = event.payload;
+          const { chunk_index, error, error_kind, retryable } = event.payload;
+          console.error("[buffer-error]", { chunk_index, error, error_kind, retryable });
           if (!retryable) {
             useTranslationStore.getState().setError(error);
           }
