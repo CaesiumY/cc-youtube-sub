@@ -42,6 +42,8 @@ export interface AppError {
   message: string;
 }
 
+export type EnvErrorKind = "not_installed" | "execution_failed";
+
 // ── Tauri 환경 감지 ──────────────────────────────────
 
 export function isTauri(): boolean {
