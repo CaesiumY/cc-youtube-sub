@@ -65,10 +65,10 @@ fn strip_markdown_code_block(input: &str) -> &str {
         if prefix[0] == b'`'
             && prefix[1] == b'`'
             && prefix[2] == b'`'
-            && prefix[3].to_ascii_lowercase() == b'j'
-            && prefix[4].to_ascii_lowercase() == b's'
-            && prefix[5].to_ascii_lowercase() == b'o'
-            && prefix[6].to_ascii_lowercase() == b'n'
+            && prefix[3].eq_ignore_ascii_case(&b'j')
+            && prefix[4].eq_ignore_ascii_case(&b's')
+            && prefix[5].eq_ignore_ascii_case(&b'o')
+            && prefix[6].eq_ignore_ascii_case(&b'n')
         {
             let rest = &trimmed[7..];
             if let Some(content) = rest.strip_suffix("```") {
