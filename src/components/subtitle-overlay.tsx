@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo } from "react";
 import { findSubtitleAt } from "../lib/subtitle-matcher";
+import { isTauri } from "../lib/tauri-commands";
 import { usePlayerStore } from "../stores/player-store";
 import { useTranslationStore } from "../stores/translation-store";
 
@@ -52,6 +53,11 @@ export function SubtitleOverlay() {
                 lineHeight: "var(--leading-subtitle, 1.6)",
               }}
             >
+              {!isTauri() && (
+                <span className="mr-1.5 rounded bg-amber-500/80 px-1 py-0.5 text-[0.6rem] font-bold uppercase text-black">
+                  mock
+                </span>
+              )}
               {currentEntry.translated}
             </p>
             {showOriginal && (
