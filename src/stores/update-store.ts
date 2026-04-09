@@ -45,6 +45,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
         set({ status: "idle" });
       }
     } catch (e) {
+      console.error("[Updater] 업데이트 확인 실패:", e);
       set({
         status: "error",
         error: e instanceof Error ? e.message : "업데이트 확인 실패",

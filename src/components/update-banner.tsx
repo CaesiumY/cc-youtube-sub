@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useUpdateStore } from "../stores/update-store";
 
 export function UpdateBanner() {
-  const { status, version, progress, dismissed, error, dismiss } =
+  const { status, version, progress, dismissed, dismiss } =
     useUpdateStore();
   const downloadAndInstall = useUpdateStore((s) => s.downloadAndInstall);
   const relaunch = useUpdateStore((s) => s.relaunch);
@@ -19,19 +19,11 @@ export function UpdateBanner() {
     }
   }, [checkForUpdate]);
 
-  // 에러 상태 5초 후 자동 dismiss
-  useEffect(() => {
-    if (status !== "error") return;
-    const timer = setTimeout(() => dismiss(), 5000);
-    return () => clearTimeout(timer);
-  }, [status, dismiss]);
-
   const visible =
     !dismissed &&
     (status === "available" ||
       status === "downloading" ||
-      status === "ready" ||
-      status === "error");
+      status === "ready");
 
   const handleUpdate = () => {
     downloadAndInstall();
@@ -41,7 +33,7 @@ export function UpdateBanner() {
     const canRelaunch = await relaunch();
     if (!canRelaunch) {
       const confirmed = window.confirm(
-        "번역이 진행 중입니다. 재시작하면 진행 중인 번역이 손실됩니다. 계���하시겠습니까?",
+        "번역이 진행 중입니다. 재시작하면 진행 중인 번역이 손실됩니다. 계속하시겠습니까?",
       );
       if (confirmed) {
         const { relaunch: forceRelaunch } = await import(
@@ -60,10 +52,9 @@ export function UpdateBanner() {
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: -60, opacity: 0 }}
           transition={{ duration: 0.3 }}
-          className="relative z-40 flex items-center justify-center gap-3 px-4 py-2.5 text-sm"
+          className="fixed top-0 left-0 right-0 z-40 flex items-center justify-center gap-3 px-4 py-2.5 text-sm"
           style={{
-            background:
-              status === "error" ? "oklch(0.35 0.1 25)" : "oklch(0.3 0.08 250)",
+            background: "oklch(0.3 0.08 250)",
           }}
         >
           {status === "available" && (
@@ -109,13 +100,6 @@ export function UpdateBanner() {
               >
                 재시작하여 적용
               </button>
-            </>
-          )}
-
-          {status === "error" && (
-            <>
-              <span className="text-red-300">업데이트 확인 ���패</span>
-              {error && <span className="text-xs text-red-400">{error}</span>}
             </>
           )}
 
