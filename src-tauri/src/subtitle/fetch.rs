@@ -13,7 +13,23 @@ use super::parser::normalize_transcript;
 /// 실패하는 경우가 있어, `list_transcripts`로 URL을 얻은 뒤
 /// 직접 HTTP GET으로 자막 XML을 가져온다.
 pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppError> {
-    let api = YouTubeTranscriptApi::new(None, None, None)?;
+    // cookie_store 활성화: YouTube가 CONSENT 쿠키를 설정하면 이후 요청에서
+    // ip=0.0.0.0 대신 실제 IP가 포함된 timedtext URL을 반환할 수 있음
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .cookie_store(true)
+        .default_headers({
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                reqwest::header::ACCEPT_LANGUAGE,
+                "en-US".parse().unwrap(),
+            );
+            headers
+        })
+        .build()
+        .map_err(|e| AppError::CaptionFetch(format!("HTTP 클라이언트 생성 실패: {}", e)))?;
+
+    let api = YouTubeTranscriptApi::new(None, None, Some(client))?;
 
     // 1차: 직접 fetch 시도 (InnerTube가 정상 동작하는 경우 빠름)
     match api.fetch_transcript(video_id, &["en"], false).await {
