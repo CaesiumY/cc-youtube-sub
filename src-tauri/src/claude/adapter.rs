@@ -33,6 +33,9 @@ fn build_claude_command(args: &[&str]) -> Command {
     }
 }
 
+/// 허용된 모델 alias 목록 — IPC 경계에서의 입력 검증용
+const ALLOWED_MODELS: &[&str] = &["haiku", "sonnet"];
+
 /// Claude CLI 환경 검증 및 실행을 담당하는 어댑터
 ///
 /// Paperclip의 ServerAdapter 패턴을 참조:
@@ -92,9 +95,22 @@ impl ClaudeAdapter {
     ///
     /// - `--print -`: stdin에서 프롬프트를 읽어 단일 응답 출력
     /// - `--output-format stream-json`: JSONL 스트림 형식 출력
+    /// - `--model`: 사용할 모델 alias (haiku, sonnet)
     /// - `CLAUDECODE` 환경변수 제거: Paperclip 패턴 (재귀 방지)
-    pub async fn execute(prompt: &str, timeout_secs: u64) -> Result<String, AppError> {
-        let mut child = build_claude_command(&["--print", "-", "--output-format", "stream-json"])
+    pub async fn execute(prompt: &str, timeout_secs: u64, model: Option<&str>) -> Result<String, AppError> {
+        if let Some(m) = model {
+            if !ALLOWED_MODELS.contains(&m) {
+                return Err(AppError::Process(format!("지원하지 않는 모델: {}", m)));
+            }
+        }
+
+        let mut args = vec!["--print", "-", "--output-format", "stream-json"];
+        if let Some(m) = model {
+            args.push("--model");
+            args.push(m);
+        }
+
+        let mut child = build_claude_command(&args)
             .env_remove("CLAUDECODE")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

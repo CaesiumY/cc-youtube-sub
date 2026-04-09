@@ -47,6 +47,7 @@ async fn translate_chunk(
     chunk: SubtitleChunk,
     video_info: Option<VideoInfo>,
     previous_context: Option<Vec<SubtitleLine>>,
+    model: Option<String>,
 ) -> Result<Vec<TranslationEntry>, AppError> {
     let prompt = build_prompt(
         &chunk,
@@ -54,7 +55,7 @@ async fn translate_chunk(
         previous_context.as_deref(),
     );
 
-    let raw_output = claude::adapter::ClaudeAdapter::execute(&prompt, 120).await?;
+    let raw_output = claude::adapter::ClaudeAdapter::execute(&prompt, 120, model.as_deref()).await?;
 
     let json_text = extract_text_from_jsonl(&raw_output)
         .map_err(|e| AppError::Translation(format!("JSONL 파싱 실패: {}", e)))?;
@@ -112,9 +113,10 @@ async fn init_buffer(
     chunks: Vec<SubtitleChunk>,
     video_info: Option<VideoInfo>,
     cached_indices: Vec<i32>,
+    model: Option<String>,
     buffer: tauri::State<'_, Arc<BufferManager>>,
 ) -> Result<(), AppError> {
-    buffer.init(video_id, chunks, video_info, cached_indices).await;
+    buffer.init(video_id, chunks, video_info, cached_indices, model).await;
     Ok(())
 }
 

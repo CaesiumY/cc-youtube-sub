@@ -89,7 +89,7 @@ async fn main() {
 
     // Step 6: Claude 번역 실행
     println!("\n[6/6] Claude CLI 번역 실행 (최대 120초)...");
-    match youtube_subtitle_lib::claude::adapter::ClaudeAdapter::execute(&prompt, 120).await {
+    match youtube_subtitle_lib::claude::adapter::ClaudeAdapter::execute(&prompt, 120, None).await {
         Ok(raw_output) => {
             println!("  ✅ Claude 응답 수신 ({} bytes)", raw_output.len());
 

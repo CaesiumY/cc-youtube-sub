@@ -64,6 +64,7 @@ struct BufferState {
     video_id: String,
     chunks: Vec<SubtitleChunk>,
     video_info: Option<VideoInfo>,
+    model: Option<String>,
     chunk_hashes: HashMap<i32, String>,
     current_position: f64,
     statuses: HashMap<i32, ChunkTranslationStatus>,
@@ -98,6 +99,7 @@ impl BufferManager {
         chunks: Vec<SubtitleChunk>,
         video_info: Option<VideoInfo>,
         cached_indices: Vec<i32>,
+        model: Option<String>,
     ) {
         let chunk_hashes: HashMap<i32, String> = chunks
             .iter()
@@ -118,6 +120,7 @@ impl BufferManager {
             video_id,
             chunks,
             video_info,
+            model,
             chunk_hashes,
             current_position: 0.0,
             statuses,
@@ -186,6 +189,7 @@ impl BufferManager {
                     chunk,
                     video_info: video_info_for_chunk,
                     prev_context,
+                    model: state.model.clone(),
                     session_id,
                     video_id,
                     chunk_hash,
@@ -217,6 +221,7 @@ impl BufferManager {
                     &task.chunk,
                     task.video_info.as_ref(),
                     task.prev_context.as_deref(),
+                    task.model.as_deref(),
                 )
                 .await;
 
@@ -394,6 +399,7 @@ struct SpawnTask {
     chunk: SubtitleChunk,
     video_info: Option<VideoInfo>,
     prev_context: Option<Vec<SubtitleLine>>,
+    model: Option<String>,
     session_id: u64,
     video_id: String,
     chunk_hash: Option<String>,
@@ -468,9 +474,10 @@ async fn translate_chunk_internal(
     chunk: &SubtitleChunk,
     video_info: Option<&VideoInfo>,
     previous_context: Option<&[SubtitleLine]>,
+    model: Option<&str>,
 ) -> Result<Vec<TranslationEntry>, AppError> {
     let prompt = build_prompt(chunk, video_info, previous_context);
-    let raw_output = ClaudeAdapter::execute(&prompt, 120).await?;
+    let raw_output = ClaudeAdapter::execute(&prompt, 120, model).await?;
     let json_text = extract_text_from_jsonl(&raw_output)
         .map_err(|e| AppError::Translation(format!("JSONL 파싱 실패: {}", e)))?;
     validate_translation(&json_text)
@@ -509,6 +516,7 @@ mod tests {
             video_id: "test".into(),
             chunks,
             video_info: None,
+            model: None,
             chunk_hashes: HashMap::new(),
             current_position: 0.0,
             statuses,
@@ -534,6 +542,7 @@ mod tests {
             video_id: "test".into(),
             chunks,
             video_info: None,
+            model: None,
             chunk_hashes: HashMap::new(),
             current_position: 0.0,
             statuses,
@@ -560,6 +569,7 @@ mod tests {
             video_id: "test".into(),
             chunks,
             video_info: None,
+            model: None,
             chunk_hashes: HashMap::new(),
             current_position: 155.0, // 청크 5 중간 (150-180)
             statuses,
@@ -586,6 +596,7 @@ mod tests {
             video_id: "test".into(),
             chunks,
             video_info: None,
+            model: None,
             chunk_hashes: HashMap::new(),
             current_position: 125.0,
             statuses,
@@ -611,6 +622,7 @@ mod tests {
             video_id: "test".into(),
             chunks,
             video_info: None,
+            model: None,
             chunk_hashes: HashMap::new(),
             current_position: 0.0,
             statuses,
@@ -659,7 +671,7 @@ mod tests {
         let mgr = BufferManager::new();
         let chunks = make_chunks(3);
 
-        mgr.init("vid1".into(), chunks, None, vec![1]).await;
+        mgr.init("vid1".into(), chunks, None, vec![1], None).await;
 
         let lock = mgr.state.lock().await;
         let state = lock.as_ref().unwrap();
@@ -674,7 +686,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_clears_state() {
         let mgr = BufferManager::new();
-        mgr.init("vid1".into(), make_chunks(3), None, vec![])
+        mgr.init("vid1".into(), make_chunks(3), None, vec![], None)
             .await;
 
         mgr.cancel().await;
@@ -686,7 +698,7 @@ mod tests {
     #[tokio::test]
     async fn test_seek_resets_in_progress() {
         let mgr = BufferManager::new();
-        mgr.init("vid1".into(), make_chunks(5), None, vec![])
+        mgr.init("vid1".into(), make_chunks(5), None, vec![], None)
             .await;
 
         {

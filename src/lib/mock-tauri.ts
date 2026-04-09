@@ -267,6 +267,7 @@ export async function translateChunk(
   chunk: SubtitleChunk,
   _videoInfo?: VideoInfo,
   _previousContext?: SubtitleLine[],
+  _model?: string,
 ): Promise<TranslationEntry[]> {
   // 실제 Claude 번역 시간 시뮬레이션 (2~4초)
   await delay(2000 + Math.random() * 2000);

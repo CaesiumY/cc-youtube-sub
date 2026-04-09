@@ -90,6 +90,7 @@ export async function translateChunk(
   chunk: SubtitleChunk,
   videoInfo?: VideoInfo,
   previousContext?: SubtitleLine[],
+  model?: string,
 ): Promise<TranslationEntry[]> {
   if (!isTauri()) {
     const mock = await import("./mock-tauri");
@@ -100,6 +101,7 @@ export async function translateChunk(
     chunk,
     videoInfo: videoInfo ?? null,
     previousContext: previousContext ?? null,
+    model: model ?? null,
   });
 }
 
@@ -163,6 +165,7 @@ export async function initBuffer(
   chunks: SubtitleChunk[],
   videoInfo: VideoInfo | null,
   cachedIndices: number[],
+  model?: string,
 ): Promise<void> {
   if (!isTauri()) return;
   const invoke = await getInvoke();
@@ -171,6 +174,7 @@ export async function initBuffer(
     chunks,
     videoInfo,
     cachedIndices,
+    model: model ?? null,
   });
 }
 

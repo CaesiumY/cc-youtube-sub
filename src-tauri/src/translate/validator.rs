@@ -9,7 +9,8 @@ use crate::translate::TranslationEntry;
 /// - 배열 길이 >= 1
 /// - translated 필드에 한국어 포함 여부 (경고만, 에러는 아님)
 pub fn validate_translation(json_str: &str) -> Result<Vec<TranslationEntry>, AppError> {
-    let entries: Vec<TranslationEntry> = serde_json::from_str(json_str).map_err(|e| {
+    let cleaned = strip_markdown_code_block(json_str);
+    let entries: Vec<TranslationEntry> = serde_json::from_str(cleaned).map_err(|e| {
         AppError::Translation(format!(
             "번역 결과 JSON 파싱 실패: {}. 원본: {}",
             e,
@@ -50,6 +51,38 @@ pub fn validate_translation(json_str: &str) -> Result<Vec<TranslationEntry>, App
 #[allow(dead_code)]
 pub fn contains_korean(text: &str) -> bool {
     text.chars().any(|c| ('\u{AC00}'..='\u{D7AF}').contains(&c))
+}
+
+/// Claude 응답에서 마크다운 코드 블록 래핑을 제거
+///
+/// Haiku 등 일부 모델이 JSON 응답을 ```json ... ``` 으로 감싸는 경우 대비.
+/// case-insensitive: ```json, ```JSON, ```Json 등 모두 처리.
+fn strip_markdown_code_block(input: &str) -> &str {
+    let trimmed = input.trim();
+    // ```json 또는 ```JSON 등으로 시작하는 경우 (7자)
+    if trimmed.len() >= 7 {
+        let prefix = &trimmed.as_bytes()[..7];
+        if prefix[0] == b'`'
+            && prefix[1] == b'`'
+            && prefix[2] == b'`'
+            && prefix[3].to_ascii_lowercase() == b'j'
+            && prefix[4].to_ascii_lowercase() == b's'
+            && prefix[5].to_ascii_lowercase() == b'o'
+            && prefix[6].to_ascii_lowercase() == b'n'
+        {
+            let rest = &trimmed[7..];
+            if let Some(content) = rest.strip_suffix("```") {
+                return content.trim();
+            }
+        }
+    }
+    // ``` 로만 감싸진 경우
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        if let Some(content) = rest.strip_suffix("```") {
+            return content.trim();
+        }
+    }
+    trimmed
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -163,5 +196,42 @@ mod tests {
     fn test_truncate() {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("a long string here", 5), "a lon...");
+    }
+
+    #[test]
+    fn test_strip_markdown_code_block_json() {
+        let input = "```json\n[{\"original\":\"hi\",\"translated\":\"안녕\",\"start\":0.0,\"end\":1.0}]\n```";
+        let result = strip_markdown_code_block(input);
+        assert!(result.starts_with('['));
+        assert!(result.ends_with(']'));
+    }
+
+    #[test]
+    fn test_strip_markdown_code_block_json_uppercase() {
+        let input = "```JSON\n[{\"original\":\"hi\",\"translated\":\"안녕\",\"start\":0.0,\"end\":1.0}]\n```";
+        let result = strip_markdown_code_block(input);
+        assert!(result.starts_with('['));
+    }
+
+    #[test]
+    fn test_strip_markdown_code_block_bare() {
+        let input = "```\n[{\"original\":\"hi\",\"translated\":\"안녕\",\"start\":0.0,\"end\":1.0}]\n```";
+        let result = strip_markdown_code_block(input);
+        assert!(result.starts_with('['));
+    }
+
+    #[test]
+    fn test_strip_markdown_code_block_no_wrapping() {
+        let input = "[{\"original\":\"hi\",\"translated\":\"안녕\",\"start\":0.0,\"end\":1.0}]";
+        let result = strip_markdown_code_block(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_validate_with_markdown_wrapped_json() {
+        let json = "```json\n[{\"original\":\"Hello\",\"translated\":\"안녕\",\"start\":0.0,\"end\":1.0}]\n```";
+        let entries = validate_translation(json).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].translated, "안녕");
     }
 }
