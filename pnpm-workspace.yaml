@@ -1,1 +1,4 @@
-onlyBuiltDependencies: '@biomejs/biome,esbuild'
+packages: []
+onlyBuiltDependencies:
+  - '@biomejs/biome'
+  - esbuild
