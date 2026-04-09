@@ -158,6 +158,8 @@ pub fn run() {
     // 앱 데이터 디렉토리에 SQLite DB 생성
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let app_dir = app
                 .path()

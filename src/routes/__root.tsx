@@ -1,5 +1,6 @@
 import { Outlet, useMatches } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
+import { UpdateBanner } from "../components/update-banner";
 
 export function RootLayout() {
   const matches = useMatches();
@@ -7,6 +8,7 @@ export function RootLayout() {
 
   return (
     <div className="h-full w-full overflow-hidden bg-background text-foreground">
+      <UpdateBanner />
       <AnimatePresence mode="wait">
         <motion.div
           key={matchKey}

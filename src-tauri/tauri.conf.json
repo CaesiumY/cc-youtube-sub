@@ -25,8 +25,17 @@
       "csp": "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' https://www.youtube.com https://s.ytimg.com; style-src 'self' 'unsafe-inline'; frame-src https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' https://www.youtube.com ipc: http://ipc.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/CaesiumY/cc-youtube-sub/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyNDY3QzVGRjc3QzE5MzcKUldRM0dYejNYM3hHMGlwbTBBNVpnMUpWNE5FRjVaL3BGeXJSQjdVTlpQdXlSRld0b2luQmp2MGwK"
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis", "dmg", "appimage", "deb"],
     "icon": [
       "icons/32x32.png",
