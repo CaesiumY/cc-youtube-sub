@@ -16,10 +16,17 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
     let api = YouTubeTranscriptApi::new(None, None, None)?;
 
     // 1차: 직접 fetch 시도 (InnerTube가 정상 동작하는 경우 빠름)
-    if let Ok(transcript) = api.fetch_transcript(video_id, &["en"], false).await {
-        let lines = normalize_transcript(&transcript.snippets);
-        if !lines.is_empty() {
-            return Ok(lines);
+    match api.fetch_transcript(video_id, &["en"], false).await {
+        Ok(transcript) => {
+            let lines = normalize_transcript(&transcript.snippets);
+            if !lines.is_empty() {
+                eprintln!("[fetch] 1차 성공: {} lines", lines.len());
+                return Ok(lines);
+            }
+            eprintln!("[fetch] 1차: transcript OK but 0 lines after normalize");
+        }
+        Err(e) => {
+            eprintln!("[fetch] 1차 실패: {:?}", e.reason);
         }
     }
 
@@ -39,19 +46,28 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
         .build()
         .unwrap_or_default();
 
-    if let Ok(fetched) = transcript.fetch(&lib_client, false).await {
-        let lines = normalize_transcript(&fetched.snippets);
-        if !lines.is_empty() {
-            return Ok(lines);
+    match transcript.fetch(&lib_client, false).await {
+        Ok(fetched) => {
+            let lines = normalize_transcript(&fetched.snippets);
+            if !lines.is_empty() {
+                eprintln!("[fetch] 2a 성공: {} lines", lines.len());
+                return Ok(lines);
+            }
+            eprintln!("[fetch] 2a: fetch OK but 0 lines after normalize");
+        }
+        Err(e) => {
+            eprintln!("[fetch] 2a 실패 (Transcript::fetch): {:?}", e.reason);
         }
     }
 
     // 2-b: Transcript.url로 직접 XML fetch (User-Agent 포함)
+    eprintln!("[fetch] 2b: URL = {}", &transcript.url);
     let response = lib_client
         .get(&transcript.url)
         .send()
         .await
         .map_err(|e| AppError::CaptionFetch(format!("자막 URL 요청 실패: {}", e)))?;
+    eprintln!("[fetch] 2b: HTTP status = {}", response.status());
 
     if !response.status().is_success() {
         return Err(AppError::CaptionFetch(format!(
@@ -65,6 +81,7 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
         .await
         .map_err(|e| AppError::CaptionFetch(format!("자막 XML 읽기 실패: {}", e)))?;
 
+    eprintln!("[fetch] 2b: XML length = {}", xml_text.len());
     if xml_text.is_empty() {
         return Err(AppError::CaptionFetch("자막 XML이 비어 있습니다".into()));
     }
