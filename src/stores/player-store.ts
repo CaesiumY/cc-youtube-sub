@@ -32,10 +32,16 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   toggleOriginal: () => set((s) => ({ showOriginal: !s.showOriginal })),
   increaseSubtitleSize: () =>
     set((s) => ({
-      subtitleSize: Math.min(s.subtitleSize + SUBTITLE_SIZE_STEP, SUBTITLE_SIZE_MAX),
+      subtitleSize: Math.min(
+        s.subtitleSize + SUBTITLE_SIZE_STEP,
+        SUBTITLE_SIZE_MAX,
+      ),
     })),
   decreaseSubtitleSize: () =>
     set((s) => ({
-      subtitleSize: Math.max(s.subtitleSize - SUBTITLE_SIZE_STEP, SUBTITLE_SIZE_MIN),
+      subtitleSize: Math.max(
+        s.subtitleSize - SUBTITLE_SIZE_STEP,
+        SUBTITLE_SIZE_MIN,
+      ),
     })),
 }));

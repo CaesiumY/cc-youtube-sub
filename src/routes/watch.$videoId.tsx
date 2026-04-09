@@ -43,7 +43,10 @@ export function PlayerView() {
         }
       } else {
         // EnvironmentCheck가 아닌 에러는 모달을 띄우지 않고 콘솔에만 기록
-        console.error("[PlayerView] unexpected error from checkEnvironment:", parsed);
+        console.error(
+          "[PlayerView] unexpected error from checkEnvironment:",
+          parsed,
+        );
       }
     });
   }, []);
@@ -85,7 +88,8 @@ export function PlayerView() {
           {currentTime.toFixed(1)}s | state: {playerState}
           {pipeline.totalChunks > 0 && (
             <>
-              {" "}| {pipeline.completedChunks}/{pipeline.totalChunks}
+              {" "}
+              | {pipeline.completedChunks}/{pipeline.totalChunks}
               {pipeline.cachedChunks > 0 &&
                 ` (cached: ${pipeline.cachedChunks})`}
             </>

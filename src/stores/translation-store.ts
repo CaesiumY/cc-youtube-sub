@@ -92,7 +92,8 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
 
     set({
       chunkStatuses: { ...chunkStatuses, [index]: status },
-      completedChunks: !wasDone && isDone ? completedChunks + 1 : completedChunks,
+      completedChunks:
+        !wasDone && isDone ? completedChunks + 1 : completedChunks,
       cachedChunks: status === "cached" ? cachedChunks + 1 : cachedChunks,
       isLoading: true,
     });
@@ -120,8 +121,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
 
   setError: (error) => set({ error, isLoading: false }),
 
-  incrementSession: () =>
-    set((state) => ({ sessionId: state.sessionId + 1 })),
+  incrementSession: () => set((state) => ({ sessionId: state.sessionId + 1 })),
 
   reset: () =>
     set({

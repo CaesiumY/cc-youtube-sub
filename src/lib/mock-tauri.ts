@@ -219,10 +219,8 @@ const MOCK_TRANSLATIONS: Record<string, string> = {
     "구현을 좀 더 자세히 살펴보겠습니다.",
   "Here's the code that makes it all work.":
     "이 모든 것을 작동시키는 코드입니다.",
-  "I'll walk you through it step by step.":
-    "단계별로 안내해 드리겠습니다.",
-  "The first function handles the input.":
-    "첫 번째 함수는 입력을 처리합니다.",
+  "I'll walk you through it step by step.": "단계별로 안내해 드리겠습니다.",
+  "The first function handles the input.": "첫 번째 함수는 입력을 처리합니다.",
   "Then we process it through our pipeline.":
     "그런 다음 파이프라인을 통해 처리합니다.",
   "And finally, we get the output.": "그리고 마지막으로 출력을 얻습니다.",

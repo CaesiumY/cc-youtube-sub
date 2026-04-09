@@ -13,7 +13,10 @@ interface ErrorModalProps {
  * - not_installed: CLI가 설치되지 않음 → npm install 안내
  * - execution_failed: CLI는 있지만 실행 실패 → PATH/재시작 안내
  */
-export function ErrorModal({ open, errorKind = "not_installed" }: ErrorModalProps) {
+export function ErrorModal({
+  open,
+  errorKind = "not_installed",
+}: ErrorModalProps) {
   return (
     <AnimatePresence>
       {open && (
@@ -64,8 +67,8 @@ export function ErrorModal({ open, errorKind = "not_installed" }: ErrorModalProp
                 </h2>
 
                 <p className="text-center text-sm leading-relaxed text-zinc-400">
-                  Claude Code CLI가 설치되어 있지만 실행할 수 없습니다.
-                  다음 사항을 확인해 주세요.
+                  Claude Code CLI가 설치되어 있지만 실행할 수 없습니다. 다음
+                  사항을 확인해 주세요.
                 </p>
 
                 <ul className="w-full space-y-2 text-sm text-zinc-400">

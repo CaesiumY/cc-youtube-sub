@@ -132,9 +132,7 @@ export async function saveToCache(
   });
 }
 
-export async function getChunkHash(
-  lines: SubtitleLine[],
-): Promise<string> {
+export async function getChunkHash(lines: SubtitleLine[]): Promise<string> {
   if (!isTauri()) {
     const mock = await import("./mock-tauri");
     return mock.getChunkHash(lines);

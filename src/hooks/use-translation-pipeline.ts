@@ -68,13 +68,13 @@ export function useTranslationPipeline(videoId: string) {
     if (sessionId !== currentSession) return;
 
     // pending 상태인 청크를 index 순으로 찾기
-    const nextChunk = chunks.find(
-      (c) => chunkStatuses[c.index] === "pending",
-    );
+    const nextChunk = chunks.find((c) => chunkStatuses[c.index] === "pending");
     if (!nextChunk) return;
 
     activeTranslations.current++;
-    useTranslationStore.getState().markChunkStatus(nextChunk.index, "translating");
+    useTranslationStore
+      .getState()
+      .markChunkStatus(nextChunk.index, "translating");
 
     try {
       // 이전 청크의 마지막 5줄을 context로 전달
@@ -82,7 +82,7 @@ export function useTranslationPipeline(videoId: string) {
 
       const entries = await translateChunk(
         nextChunk,
-        nextChunk.index === 0 ? videoInfo ?? undefined : undefined,
+        nextChunk.index === 0 ? (videoInfo ?? undefined) : undefined,
         prevContext,
       );
 
@@ -102,7 +102,9 @@ export function useTranslationPipeline(videoId: string) {
       }
     } catch (err) {
       if (sessionRef.current === currentSession) {
-        useTranslationStore.getState().markChunkStatus(nextChunk.index, "error");
+        useTranslationStore
+          .getState()
+          .markChunkStatus(nextChunk.index, "error");
         console.error("번역 실패:", nextChunk.index, err);
       }
     } finally {
@@ -194,9 +196,8 @@ export function useTranslationPipeline(videoId: string) {
   return {
     isLoading: isLoadingSubtitles || store.isLoading,
     error: subtitleError ? String(subtitleError) : store.error,
-    progress: store.totalChunks > 0
-      ? store.completedChunks / store.totalChunks
-      : 0,
+    progress:
+      store.totalChunks > 0 ? store.completedChunks / store.totalChunks : 0,
     totalChunks: store.totalChunks,
     completedChunks: store.completedChunks,
     cachedChunks: store.cachedChunks,
