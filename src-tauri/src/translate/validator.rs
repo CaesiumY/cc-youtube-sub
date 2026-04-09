@@ -215,7 +215,8 @@ mod tests {
 
     #[test]
     fn test_strip_markdown_code_block_bare() {
-        let input = "```\n[{\"original\":\"hi\",\"translated\":\"안녕\",\"start\":0.0,\"end\":1.0}]\n```";
+        let input =
+            "```\n[{\"original\":\"hi\",\"translated\":\"안녕\",\"start\":0.0,\"end\":1.0}]\n```";
         let result = strip_markdown_code_block(input);
         assert!(result.starts_with('['));
     }

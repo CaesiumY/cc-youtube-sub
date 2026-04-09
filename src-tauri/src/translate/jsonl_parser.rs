@@ -63,10 +63,7 @@ mod tests {
 {"type":"message_stop"}"#;
 
         let result = extract_text_from_jsonl(jsonl).unwrap();
-        assert_eq!(
-            result,
-            r#"[{"original": "Hello","translated": "안녕"}]"#
-        );
+        assert_eq!(result, r#"[{"original": "Hello","translated": "안녕"}]"#);
     }
 
     #[test]

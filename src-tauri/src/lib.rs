@@ -49,13 +49,10 @@ async fn translate_chunk(
     previous_context: Option<Vec<SubtitleLine>>,
     model: Option<String>,
 ) -> Result<Vec<TranslationEntry>, AppError> {
-    let prompt = build_prompt(
-        &chunk,
-        video_info.as_ref(),
-        previous_context.as_deref(),
-    );
+    let prompt = build_prompt(&chunk, video_info.as_ref(), previous_context.as_deref());
 
-    let raw_output = claude::adapter::ClaudeAdapter::execute(&prompt, 120, model.as_deref()).await?;
+    let raw_output =
+        claude::adapter::ClaudeAdapter::execute(&prompt, 120, model.as_deref()).await?;
 
     let json_text = extract_text_from_jsonl(&raw_output)
         .map_err(|e| AppError::Translation(format!("JSONL 파싱 실패: {}", e)))?;
@@ -116,7 +113,9 @@ async fn init_buffer(
     model: Option<String>,
     buffer: tauri::State<'_, Arc<BufferManager>>,
 ) -> Result<(), AppError> {
-    buffer.init(video_id, chunks, video_info, cached_indices, model).await;
+    buffer
+        .init(video_id, chunks, video_info, cached_indices, model)
+        .await;
     Ok(())
 }
 
@@ -148,9 +147,7 @@ async fn on_seek(
 
 /// 버퍼링 취소 (영상 전환 시)
 #[tauri::command]
-async fn cancel_buffering(
-    buffer: tauri::State<'_, Arc<BufferManager>>,
-) -> Result<(), AppError> {
+async fn cancel_buffering(buffer: tauri::State<'_, Arc<BufferManager>>) -> Result<(), AppError> {
     buffer.cancel().await;
     Ok(())
 }
@@ -169,8 +166,7 @@ pub fn run() {
                 .expect("앱 데이터 디렉토리를 찾을 수 없습니다");
             let db_path = app_dir.join("translation_cache.db");
 
-            let cache = TranslationCache::new(db_path)
-                .expect("SQLite 캐시 초기화 실패");
+            let cache = TranslationCache::new(db_path).expect("SQLite 캐시 초기화 실패");
 
             app.manage(Arc::new(cache));
             app.manage(Arc::new(BufferManager::new()));

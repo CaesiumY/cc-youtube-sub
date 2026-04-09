@@ -19,10 +19,16 @@ async fn main() {
         Ok(l) => {
             println!("  ✅ {} lines", l.len());
             if let Some(first) = l.first() {
-                println!("  첫 줄: [{:.1}s-{:.1}s] {}", first.start, first.end, first.text);
+                println!(
+                    "  첫 줄: [{:.1}s-{:.1}s] {}",
+                    first.start, first.end, first.text
+                );
             }
             if let Some(last) = l.last() {
-                println!("  끝 줄: [{:.1}s-{:.1}s] {}", last.start, last.end, last.text);
+                println!(
+                    "  끝 줄: [{:.1}s-{:.1}s] {}",
+                    last.start, last.end, last.text
+                );
             }
             l
         }
@@ -58,7 +64,10 @@ async fn main() {
     for chunk in &chunks {
         println!(
             "  chunk {}: {:.1}s-{:.1}s ({} lines)",
-            chunk.index, chunk.start_time, chunk.end_time, chunk.lines.len()
+            chunk.index,
+            chunk.start_time,
+            chunk.end_time,
+            chunk.lines.len()
         );
     }
 
@@ -118,7 +127,10 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("  ❌ JSONL 파싱 실패: {e}");
-                    println!("  Raw output:\n{}", &raw_output[..raw_output.len().min(500)]);
+                    println!(
+                        "  Raw output:\n{}",
+                        &raw_output[..raw_output.len().min(500)]
+                    );
                 }
             }
         }

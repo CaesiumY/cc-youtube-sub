@@ -135,10 +135,7 @@ mod tests {
 
     #[test]
     fn test_subsequent_chunk_with_context() {
-        let chunk = make_chunk(
-            1,
-            vec![make_line("New content", 35.0, 37.0)],
-        );
+        let chunk = make_chunk(1, vec![make_line("New content", 35.0, 37.0)]);
         let context = vec![
             make_line("Previous line 1", 28.0, 30.0),
             make_line("Previous line 2", 30.0, 33.0),
@@ -165,10 +162,7 @@ mod tests {
 
     #[test]
     fn test_time_format_in_subtitles() {
-        let chunk = make_chunk(
-            0,
-            vec![make_line("test", 65.0, 67.5)],
-        );
+        let chunk = make_chunk(0, vec![make_line("test", 65.0, 67.5)]);
         let prompt = build_prompt(&chunk, None, None);
         // 65초 = 1:05.0
         assert!(prompt.contains("[65.0-67.5s]"));

@@ -50,8 +50,14 @@ mod tests {
     #[test]
     fn test_html_entity_decoding() {
         assert_eq!(decode_html_entities("Tom &amp; Jerry"), "Tom & Jerry");
-        assert_eq!(decode_html_entities("&lt;b&gt;bold&lt;/b&gt;"), "<b>bold</b>");
-        assert_eq!(decode_html_entities("he said &quot;hello&quot;"), "he said \"hello\"");
+        assert_eq!(
+            decode_html_entities("&lt;b&gt;bold&lt;/b&gt;"),
+            "<b>bold</b>"
+        );
+        assert_eq!(
+            decode_html_entities("he said &quot;hello&quot;"),
+            "he said \"hello\""
+        );
         assert_eq!(decode_html_entities("it&#39;s fine"), "it's fine");
         assert_eq!(decode_html_entities("a &amp; b &lt; c"), "a & b < c");
     }

@@ -19,6 +19,7 @@ const CMD_NOT_FOUND_EXIT_CODE: i32 = 9009;
 fn build_claude_command(args: &[&str]) -> Command {
     #[cfg(target_os = "windows")]
     {
+        #[allow(unused_imports)]
         use std::os::windows::process::CommandExt;
         // GUI 앱에서 cmd.exe 자식이 새 콘솔 창을 할당하는 것을 방지
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -102,7 +103,11 @@ impl ClaudeAdapter {
     /// - `--output-format stream-json`: JSONL 스트림 형식 출력
     /// - `--model`: 사용할 모델 alias (haiku, sonnet)
     /// - `CLAUDECODE` 환경변수 제거: Paperclip 패턴 (재귀 방지)
-    pub async fn execute(prompt: &str, timeout_secs: u64, model: Option<&str>) -> Result<String, AppError> {
+    pub async fn execute(
+        prompt: &str,
+        timeout_secs: u64,
+        model: Option<&str>,
+    ) -> Result<String, AppError> {
         if let Some(m) = model {
             if !ALLOWED_MODELS.contains(&m) {
                 return Err(AppError::Process(format!("지원하지 않는 모델: {}", m)));
@@ -138,9 +143,7 @@ impl ClaudeAdapter {
             child.wait_with_output(),
         )
         .await
-        .map_err(|_| {
-            AppError::Process(format!("Claude 응답 타임아웃 ({}초)", timeout_secs))
-        })?
+        .map_err(|_| AppError::Process(format!("Claude 응답 타임아웃 ({}초)", timeout_secs)))?
         .map_err(|e| AppError::Process(format!("Claude 프로세스 대기 실패: {}", e)))?;
 
         if !output.status.success() {
@@ -167,9 +170,10 @@ impl ClaudeAdapter {
     #[allow(dead_code)]
     pub async fn shutdown(child: &mut tokio::process::Child) -> Result<(), AppError> {
         // SIGTERM으로 먼저 시도
-        child.kill().await.map_err(|e| {
-            AppError::Process(format!("Claude 프로세스 종료 실패: {}", e))
-        })?;
+        child
+            .kill()
+            .await
+            .map_err(|e| AppError::Process(format!("Claude 프로세스 종료 실패: {}", e)))?;
         Ok(())
     }
 }

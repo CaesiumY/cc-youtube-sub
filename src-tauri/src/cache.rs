@@ -23,19 +23,16 @@ impl TranslationCache {
     pub fn new(db_path: PathBuf) -> Result<Self, AppError> {
         // 부모 디렉토리가 없으면 생성
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                AppError::Database(format!("DB 디렉토리 생성 실패: {}", e))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| AppError::Database(format!("DB 디렉토리 생성 실패: {}", e)))?;
         }
 
-        let conn = Connection::open(&db_path).map_err(|e| {
-            AppError::Database(format!("SQLite 열기 실패: {}", e))
-        })?;
+        let conn = Connection::open(&db_path)
+            .map_err(|e| AppError::Database(format!("SQLite 열기 실패: {}", e)))?;
 
         // WAL 모드 활성화
-        conn.execute_batch("PRAGMA journal_mode=WAL;").map_err(|e| {
-            AppError::Database(format!("WAL 모드 설정 실패: {}", e))
-        })?;
+        conn.execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(|e| AppError::Database(format!("WAL 모드 설정 실패: {}", e)))?;
 
         // 테이블 생성
         conn.execute_batch(
@@ -48,9 +45,7 @@ impl TranslationCache {
                 UNIQUE(video_id, chunk_hash)
             );",
         )
-        .map_err(|e| {
-            AppError::Database(format!("테이블 생성 실패: {}", e))
-        })?;
+        .map_err(|e| AppError::Database(format!("테이블 생성 실패: {}", e)))?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -59,9 +54,10 @@ impl TranslationCache {
 
     /// 단일 청크 캐시 조회
     pub fn query(&self, video_id: &str, chunk_hash: &str) -> Result<Option<String>, AppError> {
-        let conn = self.conn.lock().map_err(|e| {
-            AppError::Database(format!("DB 락 획득 실패: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Database(format!("DB 락 획득 실패: {}", e)))?;
 
         let mut stmt = conn
             .prepare(
@@ -85,9 +81,10 @@ impl TranslationCache {
         chunk_hash: &str,
         translated_json: &str,
     ) -> Result<(), AppError> {
-        let conn = self.conn.lock().map_err(|e| {
-            AppError::Database(format!("DB 락 획득 실패: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Database(format!("DB 락 획득 실패: {}", e)))?;
 
         conn.execute(
             "INSERT OR REPLACE INTO translation_cache (video_id, chunk_hash, translated_json) VALUES (?1, ?2, ?3)",
@@ -104,9 +101,10 @@ impl TranslationCache {
         video_id: &str,
         chunk_hashes: &[String],
     ) -> Result<HashMap<String, String>, AppError> {
-        let conn = self.conn.lock().map_err(|e| {
-            AppError::Database(format!("DB 락 획득 실패: {}", e))
-        })?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AppError::Database(format!("DB 락 획득 실패: {}", e)))?;
 
         let mut result = HashMap::new();
 
@@ -132,7 +130,11 @@ impl TranslationCache {
 /// 청크 라인들로부터 캐시 해시를 생성한다.
 /// SHA256(라인 텍스트를 공백으로 join)
 pub fn compute_chunk_hash(lines: &[SubtitleLine]) -> String {
-    let input: String = lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ");
+    let input: String = lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     format!("{:x}", hasher.finalize())

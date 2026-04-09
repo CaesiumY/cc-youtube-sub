@@ -24,22 +24,22 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
     }
 
     // 2차: list_transcripts → URL 직접 fetch (InnerTube 우회)
-    let transcript_list = api.list_transcripts(video_id).await.map_err(|e| {
-        AppError::CaptionFetch(format!("자막 목록 조회 실패: {:?}", e.reason))
-    })?;
+    let transcript_list = api
+        .list_transcripts(video_id)
+        .await
+        .map_err(|e| AppError::CaptionFetch(format!("자막 목록 조회 실패: {:?}", e.reason)))?;
 
     let transcript = transcript_list.find_transcript(&["en"]).map_err(|e| {
-        AppError::CaptionFetch(format!(
-            "영어 자막을 찾을 수 없습니다: {:?}",
-            e.reason
-        ))
+        AppError::CaptionFetch(format!("영어 자막을 찾을 수 없습니다: {:?}", e.reason))
     })?;
 
     // Transcript.url로 직접 XML fetch
     let client = reqwest::Client::new();
-    let response = client.get(&transcript.url).send().await.map_err(|e| {
-        AppError::CaptionFetch(format!("자막 URL 요청 실패: {}", e))
-    })?;
+    let response = client
+        .get(&transcript.url)
+        .send()
+        .await
+        .map_err(|e| AppError::CaptionFetch(format!("자막 URL 요청 실패: {}", e)))?;
 
     if !response.status().is_success() {
         return Err(AppError::CaptionFetch(format!(
@@ -48,9 +48,10 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
         )));
     }
 
-    let xml_text = response.text().await.map_err(|e| {
-        AppError::CaptionFetch(format!("자막 XML 읽기 실패: {}", e))
-    })?;
+    let xml_text = response
+        .text()
+        .await
+        .map_err(|e| AppError::CaptionFetch(format!("자막 XML 읽기 실패: {}", e)))?;
 
     if xml_text.is_empty() {
         return Err(AppError::CaptionFetch("자막 XML이 비어 있습니다".into()));
@@ -58,9 +59,9 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
 
     // XML → FetchedTranscriptSnippet 파싱
     let parser = TranscriptParser::new(false);
-    let snippets = parser.parse(&xml_text).map_err(|e| {
-        AppError::CaptionFetch(format!("자막 XML 파싱 실패: {}", e))
-    })?;
+    let snippets = parser
+        .parse(&xml_text)
+        .map_err(|e| AppError::CaptionFetch(format!("자막 XML 파싱 실패: {}", e)))?;
 
     let lines = normalize_transcript(&snippets);
 

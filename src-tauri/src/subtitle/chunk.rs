@@ -26,8 +26,7 @@ pub fn split_into_chunks(lines: &[SubtitleLine]) -> Vec<SubtitleChunk> {
         // - 20줄 도달 (hard limit, 시간 무관)
         // - 또는 30초 이상 경과 후 60초 도달
         let should_close = !chunk_lines.is_empty()
-            && (chunk_lines.len() >= MAX_LINES_PER_CHUNK
-                || elapsed >= MAX_CHUNK_SECS);
+            && (chunk_lines.len() >= MAX_LINES_PER_CHUNK || elapsed >= MAX_CHUNK_SECS);
 
         if should_close {
             let end_time = chunk_lines.last().unwrap().end;
@@ -111,7 +110,11 @@ mod tests {
             ));
         }
         let chunks = split_into_chunks(&lines);
-        assert!(chunks.len() >= 2, "expected >= 2 chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "expected >= 2 chunks, got {}",
+            chunks.len()
+        );
         assert_eq!(chunks[0].index, 0);
         assert_eq!(chunks[1].index, 1);
     }

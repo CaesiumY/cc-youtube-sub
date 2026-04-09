@@ -145,9 +145,9 @@ impl BufferManager {
         // 이렇게 하면 번역 실행 중 락이 잡히지 않는다.
         let tasks_to_spawn = {
             let mut lock = self.state.lock().await;
-            let state = lock.as_mut().ok_or_else(|| {
-                AppError::Process("버퍼 매니저가 초기화되지 않았습니다".into())
-            })?;
+            let state = lock
+                .as_mut()
+                .ok_or_else(|| AppError::Process("버퍼 매니저가 초기화되지 않았습니다".into()))?;
 
             state.current_position = current_time;
 
@@ -269,9 +269,9 @@ impl BufferManager {
     ) -> Result<(), AppError> {
         {
             let mut lock = self.state.lock().await;
-            let state = lock.as_mut().ok_or_else(|| {
-                AppError::Process("버퍼 매니저가 초기화되지 않았습니다".into())
-            })?;
+            let state = lock
+                .as_mut()
+                .ok_or_else(|| AppError::Process("버퍼 매니저가 초기화되지 않았습니다".into()))?;
 
             state.session_id += 1;
             state.current_position = target_time;
@@ -390,7 +390,6 @@ impl BufferManager {
             },
         );
     }
-
 }
 
 // ── spawn 태스크용 데이터 구조 ──────────────────────
@@ -454,8 +453,7 @@ fn classify_error(error: &AppError) -> String {
         "rate_limit".into()
     } else if msg.contains("timeout") || msg.contains("타임아웃") {
         "timeout".into()
-    } else if msg.contains("claude")
-        && (msg.contains("찾을 수 없") || msg.contains("not found"))
+    } else if msg.contains("claude") && (msg.contains("찾을 수 없") || msg.contains("not found"))
     {
         "cli_not_found".into()
     } else {
@@ -704,12 +702,8 @@ mod tests {
         {
             let mut lock = mgr.state.lock().await;
             let state = lock.as_mut().unwrap();
-            state
-                .statuses
-                .insert(0, ChunkTranslationStatus::InProgress);
-            state
-                .statuses
-                .insert(1, ChunkTranslationStatus::InProgress);
+            state.statuses.insert(0, ChunkTranslationStatus::InProgress);
+            state.statuses.insert(1, ChunkTranslationStatus::InProgress);
             state.in_progress = 2;
         }
 
