@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { isTauri } from "../lib/tauri-commands";
+import { translateUpdateError } from "../lib/update-error";
 
 type UpdateStatus =
   | "idle"
@@ -9,14 +10,17 @@ type UpdateStatus =
   | "ready"
   | "error";
 
+type UpdateTrigger = "auto" | "manual";
+
 interface UpdateState {
   status: UpdateStatus;
   version: string | null;
   progress: number;
   dismissed: boolean;
   error: string | null;
+  lastTriggeredBy: UpdateTrigger;
 
-  checkForUpdate: () => Promise<void>;
+  checkForUpdate: (trigger?: UpdateTrigger) => Promise<void>;
   downloadAndInstall: () => Promise<void>;
   relaunch: () => Promise<boolean>;
   dismiss: () => void;
@@ -28,12 +32,18 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   progress: 0,
   dismissed: false,
   error: null,
+  lastTriggeredBy: "auto",
 
-  checkForUpdate: async () => {
+  checkForUpdate: async (trigger = "auto") => {
     if (!isTauri()) return;
     if (get().status === "checking") return;
 
-    set({ status: "checking", error: null });
+    set({
+      status: "checking",
+      error: null,
+      dismissed: false,
+      lastTriggeredBy: trigger,
+    });
 
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
@@ -48,7 +58,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       console.error("[Updater] 업데이트 확인 실패:", e);
       set({
         status: "error",
-        error: e instanceof Error ? e.message : "업데이트 확인 실패",
+        error: translateUpdateError(e),
       });
     }
   },
@@ -56,7 +66,8 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   downloadAndInstall: async () => {
     if (!isTauri()) return;
 
-    set({ status: "downloading", progress: 0 });
+    // 다운로드는 사용자가 명시적으로 트리거하므로 manual로 기록한다.
+    set({ status: "downloading", progress: 0, lastTriggeredBy: "manual" });
 
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
@@ -87,9 +98,10 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
 
       set({ status: "ready", progress: 100 });
     } catch (e) {
+      console.error("[Updater] 다운로드 실패:", e);
       set({
         status: "error",
-        error: e instanceof Error ? e.message : "다운로드 실패",
+        error: translateUpdateError(e),
       });
     }
   },

@@ -1,32 +1,45 @@
-import { Download, RefreshCw, X, Zap } from "lucide-react";
+import { AlertTriangle, Download, RefreshCw, X, Zap } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef } from "react";
 import { useUpdateStore } from "../stores/update-store";
 
 export function UpdateBanner() {
-  const { status, version, progress, dismissed, dismiss } =
-    useUpdateStore();
+  const {
+    status,
+    version,
+    progress,
+    dismissed,
+    error,
+    lastTriggeredBy,
+    dismiss,
+  } = useUpdateStore();
   const downloadAndInstall = useUpdateStore((s) => s.downloadAndInstall);
   const relaunch = useUpdateStore((s) => s.relaunch);
   const checkForUpdate = useUpdateStore((s) => s.checkForUpdate);
 
-  // 앱 시작 시 1회 업데이트 확인
+  // 앱 시작 시 1회 자동 확인. 실패해도 UI에는 노출하지 않는다(auto 트리거).
   const checkedRef = useRef(false);
   useEffect(() => {
     if (!checkedRef.current) {
       checkedRef.current = true;
-      checkForUpdate();
+      checkForUpdate("auto");
     }
   }, [checkForUpdate]);
 
+  const isErrorVisible = status === "error" && lastTriggeredBy === "manual";
   const visible =
     !dismissed &&
     (status === "available" ||
       status === "downloading" ||
-      status === "ready");
+      status === "ready" ||
+      isErrorVisible);
 
   const handleUpdate = () => {
     downloadAndInstall();
+  };
+
+  const handleRetry = () => {
+    checkForUpdate("manual");
   };
 
   const handleRelaunch = async () => {
@@ -44,6 +57,10 @@ export function UpdateBanner() {
     }
   };
 
+  const background = isErrorVisible
+    ? "oklch(0.32 0.12 25)"
+    : "oklch(0.3 0.08 250)";
+
   return (
     <AnimatePresence>
       {visible && (
@@ -53,9 +70,7 @@ export function UpdateBanner() {
           exit={{ y: -60, opacity: 0 }}
           transition={{ duration: 0.3 }}
           className="fixed top-0 left-0 right-0 z-40 flex items-center justify-center gap-3 px-4 py-2.5 text-sm"
-          style={{
-            background: "oklch(0.3 0.08 250)",
-          }}
+          style={{ background }}
         >
           {status === "available" && (
             <>
@@ -99,6 +114,22 @@ export function UpdateBanner() {
                 className="rounded-md bg-emerald-500 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-400"
               >
                 재시작하여 적용
+              </button>
+            </>
+          )}
+
+          {isErrorVisible && (
+            <>
+              <AlertTriangle className="h-4 w-4 shrink-0 text-red-300" />
+              <span className="text-zinc-200">
+                {error ?? "업데이트 확인에 실패했습니다"}
+              </span>
+              <button
+                type="button"
+                onClick={handleRetry}
+                className="rounded-md bg-red-500/80 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-red-500"
+              >
+                다시 확인
               </button>
             </>
           )}
