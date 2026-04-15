@@ -27,6 +27,17 @@ export function UpdateBanner() {
   }, [checkForUpdate]);
 
   const isErrorVisible = status === "error" && lastTriggeredBy === "manual";
+
+  // 에러 배너는 5초 후 자동으로 닫힌다 (X 버튼 수동 dismiss와 동일 효과).
+  // 다른 상태(available/downloading/ready)는 사용자 액션을 요구하므로 유지한다.
+  useEffect(() => {
+    if (!isErrorVisible) return;
+    const timer = setTimeout(() => {
+      dismiss();
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [isErrorVisible, dismiss]);
+
   const visible =
     !dismissed &&
     (status === "available" ||
@@ -36,10 +47,6 @@ export function UpdateBanner() {
 
   const handleUpdate = () => {
     downloadAndInstall();
-  };
-
-  const handleRetry = () => {
-    checkForUpdate("manual");
   };
 
   const handleRelaunch = async () => {
@@ -124,13 +131,6 @@ export function UpdateBanner() {
               <span className="text-zinc-200">
                 {error ?? "업데이트 확인에 실패했습니다"}
               </span>
-              <button
-                type="button"
-                onClick={handleRetry}
-                className="rounded-md bg-red-500/80 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-red-500"
-              >
-                다시 확인
-              </button>
             </>
           )}
 

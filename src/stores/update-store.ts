@@ -12,6 +12,14 @@ type UpdateStatus =
 
 type UpdateTrigger = "auto" | "manual";
 
+/**
+ * 수동 확인(Home "업데이트 확인" 버튼) 시 로딩 상태가 최소 이 시간 이상 보이도록
+ * 보장한다. 404 같은 즉시 실패가 수십 ms 만에 끝나면 버튼 → 배너로 갑자기
+ * 전환되어 "클릭이 반영됐는지" 인지가 안 되는 문제를 해결. 자동 확인에는 적용
+ * 안 함(UI에 노출 자체가 없음).
+ */
+const MIN_CHECKING_MS_FOR_MANUAL = 500;
+
 interface UpdateState {
   status: UpdateStatus;
   version: string | null;
@@ -38,6 +46,8 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     if (!isTauri()) return;
     if (get().status === "checking") return;
 
+    const startedAt = Date.now();
+
     set({
       status: "checking",
       error: null,
@@ -45,9 +55,21 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       lastTriggeredBy: trigger,
     });
 
+    const ensureMinCheckingTime = async () => {
+      if (trigger !== "manual") return;
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < MIN_CHECKING_MS_FOR_MANUAL) {
+        await new Promise((r) =>
+          setTimeout(r, MIN_CHECKING_MS_FOR_MANUAL - elapsed),
+        );
+      }
+    };
+
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
+
+      await ensureMinCheckingTime();
 
       if (update) {
         set({ status: "available", version: update.version });
@@ -56,6 +78,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       }
     } catch (e) {
       console.error("[Updater] 업데이트 확인 실패:", e);
+      await ensureMinCheckingTime();
       set({
         status: "error",
         error: translateUpdateError(e),
