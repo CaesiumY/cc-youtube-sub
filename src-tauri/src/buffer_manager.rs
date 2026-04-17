@@ -441,10 +441,12 @@ impl BufferManager {
             );
         }
 
-        // 어떤 이유로든 첫 청크가 종료되었으면 Claude 세션이 이미 생성되었을 가능성이 높다.
-        // bootstrap 플래그를 해제해 재시도가 --session-id로 재충돌하지 않고 --resume 모드로
-        // 전환되도록 한다. (세션 재사용이 폴백으로 꺼졌으면 이 플래그는 영향 없음.)
-        state.session_initialized = true;
+        // 주의: 여기서 session_initialized를 강제로 true로 설정하지 않는다.
+        // 네트워크/CLI 실패 등으로 Claude 세션이 실제로 생성되지 않은 상태에서 true로 두면
+        // 이후 재시도가 --resume을 시도해 "세션 없음"으로 영구 실패로 이어질 수 있다.
+        // 대신 세션 충돌이 실제로 재발할 경우(session_conflict)에만 session_reuse_disabled
+        // 폴백이 작동하여 독립 모드로 전환되므로 안전. session_initialized는 handle_completion
+        // (실제 세션 생성 확인)에서만 true로 설정된다.
 
         let _ = app.emit(
             "buffer-error",
@@ -915,13 +917,17 @@ mod tests {
             if error_kind == "session_conflict" {
                 state.session_reuse_disabled = true;
             }
-            state.session_initialized = true;
+            // session_initialized는 handle_error에서 변경하지 않음 — handle_completion 전용
         }
 
         let lock = mgr.state.lock().await;
         let state = lock.as_ref().unwrap();
         assert!(state.session_reuse_disabled, "충돌 감지 후 재사용 비활성");
-        assert!(state.session_initialized, "bootstrap 플래그 해제");
+        assert!(
+            !state.session_initialized,
+            "handle_error는 session_initialized를 변경하지 않음 — \
+             네트워크/CLI 실패로 세션 미생성인 경우 resume 시 영구 실패 방지"
+        );
         assert_eq!(state.in_progress, 0);
         assert_eq!(state.statuses[&0], ChunkTranslationStatus::Error(1));
     }
@@ -950,7 +956,7 @@ mod tests {
             if error_kind == "session_conflict" {
                 state.session_reuse_disabled = true;
             }
-            state.session_initialized = true;
+            // session_initialized는 변경하지 않음
         }
 
         let lock = mgr.state.lock().await;
@@ -959,7 +965,10 @@ mod tests {
             !state.session_reuse_disabled,
             "일반 에러는 세션 재사용 유지"
         );
-        assert!(state.session_initialized, "첫 청크 에러 후 bootstrap 해제");
+        assert!(
+            !state.session_initialized,
+            "handle_error는 session_initialized를 변경하지 않음"
+        );
     }
 
     #[tokio::test]
