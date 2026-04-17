@@ -13,6 +13,19 @@ const BASE_WIDTH = 640;
 const SCALE_MIN = 0.9;
 const SCALE_MAX = 1.6;
 
+/**
+ * 자막 매칭 시점을 재생 시간보다 살짝 앞당기는 offset (초).
+ *
+ * 이유:
+ * - YouTube 자동 자막(ASR)의 `start` 시점은 보통 실제 발음보다 0.3~0.6초 뒤에 찍힘
+ *   (YouTube가 발음 완료 무렵에 snippet 경계 설정하는 구조적 특성)
+ * - 학습 자막 특성상 "살짝 먼저 보이는" 게 오히려 읽고 듣기 편함
+ *
+ * 너무 크면 다음 자막이 너무 일찍 뜨고, 너무 작으면 체감상 늦음.
+ * 어색하면 값만 조정.
+ */
+const SUBTITLE_LEAD_SEC = 0.5;
+
 function computeScale(width: number): number {
   if (width <= 0) return 1;
   const raw = width / BASE_WIDTH;
@@ -51,7 +64,7 @@ export function SubtitleOverlay() {
   }, []);
 
   const currentEntry = useMemo(
-    () => findSubtitleAt(translations, currentTime),
+    () => findSubtitleAt(translations, currentTime + SUBTITLE_LEAD_SEC),
     [translations, currentTime],
   );
 

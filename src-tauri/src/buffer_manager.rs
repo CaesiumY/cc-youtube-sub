@@ -78,6 +78,9 @@ struct BufferState {
     claude_session_id: String,
     /// 세션이 생성되었는지 (첫 청크 번역 성공 여부)
     session_initialized: bool,
+    /// 세션 충돌이 한 번이라도 감지되면 true — 이후 청크는 claude_session_id 없이
+    /// 독립 실행(맥락 손실, 안정성 우선).
+    session_reuse_disabled: bool,
     /// rate limit 백오프 종료 시각
     rate_limited_until: Option<std::time::Instant>,
 }
@@ -138,6 +141,7 @@ impl BufferManager {
             session_id: 0,
             claude_session_id: uuid::Uuid::new_v4().to_string(),
             session_initialized: false,
+            session_reuse_disabled: false,
             rate_limited_until: None,
         });
     }
@@ -181,7 +185,7 @@ impl BufferManager {
             let mut tasks = Vec::new();
 
             for idx in priority {
-                if state.in_progress >= effective_concurrent {
+                if !can_spawn_in_state(state, effective_concurrent) {
                     break;
                 }
 
@@ -201,8 +205,18 @@ impl BufferManager {
                     .insert(idx, ChunkTranslationStatus::InProgress);
                 state.in_progress += 1;
 
-                let is_first_in_session = !state.session_initialized;
-                // 세션 첫 호출에만 영상 정보/이전 맥락을 전달 (이후는 세션이 기억)
+                // 세션 재사용 여부/bootstrap 상태에 따라 Claude CLI 호출 모드 결정
+                let use_session = !state.session_reuse_disabled;
+                let claude_session_id = if use_session {
+                    Some(state.claude_session_id.clone())
+                } else {
+                    None
+                };
+                // 폴백 모드(세션 없음)이면 매번 "새 세션/독립 실행"이므로 true.
+                // 세션 사용 중이면 초기 bootstrap 아직이면 true, 이후 resume 모드면 false.
+                let is_first_in_session = !use_session || !state.session_initialized;
+
+                // 세션 첫 호출(또는 독립 실행)에만 영상 정보/이전 맥락을 전달.
                 let video_info_for_chunk = if is_first_in_session {
                     state.video_info.clone()
                 } else {
@@ -216,7 +230,6 @@ impl BufferManager {
                 let session_id = state.session_id;
                 let video_id = state.video_id.clone();
                 let chunk_hash = state.chunk_hashes.get(&idx).cloned();
-                let claude_session_id = state.claude_session_id.clone();
 
                 tasks.push(SpawnTask {
                     chunk,
@@ -257,7 +270,7 @@ impl BufferManager {
                     task.video_info.as_ref(),
                     task.prev_context.as_deref(),
                     task.model.as_deref(),
-                    Some(&task.claude_session_id),
+                    task.claude_session_id.as_deref(),
                     task.is_first_in_session,
                 )
                 .await;
@@ -410,6 +423,16 @@ impl BufferManager {
 
         let error_kind = classify_error(error);
 
+        // 세션 충돌 감지 시 폴백: 이후 청크는 세션 없이 독립 실행.
+        // 이 청크는 그대로 retryable 상태로 두면 다음 폴링에서 독립 모드로 재시도됨.
+        if error_kind == "session_conflict" {
+            state.session_reuse_disabled = true;
+            eprintln!(
+                "[buffer] 세션 충돌 감지, 영상 나머지 번역을 독립 모드로 폴백 (chunk {})",
+                chunk_index
+            );
+        }
+
         // rate limit 감지 시 쿨다운 시작 — update_position이 MAX_CONCURRENT_BACKOFF로 제한
         if error_kind == "rate_limit" {
             state.rate_limited_until = Some(
@@ -417,6 +440,11 @@ impl BufferManager {
                     + std::time::Duration::from_secs(RATE_LIMIT_COOLDOWN_SECS),
             );
         }
+
+        // 어떤 이유로든 첫 청크가 종료되었으면 Claude 세션이 이미 생성되었을 가능성이 높다.
+        // bootstrap 플래그를 해제해 재시도가 --session-id로 재충돌하지 않고 --resume 모드로
+        // 전환되도록 한다. (세션 재사용이 폴백으로 꺼졌으면 이 플래그는 영향 없음.)
+        state.session_initialized = true;
 
         let _ = app.emit(
             "buffer-error",
@@ -452,7 +480,8 @@ struct SpawnTask {
     chunk_hash: Option<String>,
     retry_count: u32,
     chunk_index: i32,
-    claude_session_id: String,
+    /// Claude CLI 세션 UUID. `None`이면 세션 재사용 비활성 (폴백 모드) — 독립 실행.
+    claude_session_id: Option<String>,
     is_first_in_session: bool,
 }
 
@@ -496,10 +525,13 @@ fn get_previous_context(chunks: &[SubtitleChunk], current_index: i32) -> Option<
         .map(|c| c.lines.iter().rev().take(8).rev().cloned().collect())
 }
 
-/// 에러 메시지에서 종류를 분류 (프론트엔드 UI 분기에 사용)
+/// 에러 메시지에서 종류를 분류 (프론트엔드 UI 분기 + BufferManager 폴백 로직에 사용)
 fn classify_error(error: &AppError) -> String {
     let msg = error.to_string().to_lowercase();
-    if msg.contains("rate limit") || msg.contains("exceeded") {
+    if msg.contains("session id") && msg.contains("already in use") {
+        // Claude CLI: `Error: Session ID {uuid} is already in use.`
+        "session_conflict".into()
+    } else if msg.contains("rate limit") || msg.contains("exceeded") {
         "rate_limit".into()
     } else if msg.contains("timeout") || msg.contains("타임아웃") {
         "timeout".into()
@@ -515,6 +547,24 @@ fn classify_error(error: &AppError) -> String {
             AppError::Process(_) => "process".into(),
         }
     }
+}
+
+/// `update_position` spawn 루프에서 "이 상태에서 추가 태스크를 spawn할 수 있는가" 판단.
+///
+/// 두 가지 조건을 결합:
+/// 1. `in_progress < effective_concurrent` — 동시 실행 한도
+/// 2. bootstrap guard — 세션 재사용 활성이고 아직 초기화 전이면 동시에 여러 개 spawn 금지
+///    (같은 `--session-id` UUID로 Claude 프로세스가 여러 개 뜨면 "already in use" 충돌)
+fn can_spawn_in_state(state: &BufferState, effective_concurrent: usize) -> bool {
+    if state.in_progress >= effective_concurrent {
+        return false;
+    }
+    let use_session = !state.session_reuse_disabled;
+    let is_bootstrap = use_session && !state.session_initialized;
+    if is_bootstrap && state.in_progress > 0 {
+        return false;
+    }
+    true
 }
 
 /// 단일 청크 번역 실행: 프롬프트 구성 → Claude subprocess → JSONL 파싱 → 검증
@@ -575,6 +625,7 @@ mod tests {
             session_id: 0,
             claude_session_id: "test-session".into(),
             session_initialized: false,
+            session_reuse_disabled: false,
             rate_limited_until: None,
         };
 
@@ -605,6 +656,7 @@ mod tests {
             session_id: 0,
             claude_session_id: "test-session".into(),
             session_initialized: false,
+            session_reuse_disabled: false,
             rate_limited_until: None,
         };
 
@@ -636,6 +688,7 @@ mod tests {
             session_id: 0,
             claude_session_id: "test-session".into(),
             session_initialized: false,
+            session_reuse_disabled: false,
             rate_limited_until: None,
         };
 
@@ -667,6 +720,7 @@ mod tests {
             session_id: 0,
             claude_session_id: "test-session".into(),
             session_initialized: false,
+            session_reuse_disabled: false,
             rate_limited_until: None,
         };
 
@@ -696,6 +750,7 @@ mod tests {
             session_id: 0,
             claude_session_id: "test-session".into(),
             session_initialized: false,
+            session_reuse_disabled: false,
             rate_limited_until: None,
         };
 
@@ -734,6 +789,177 @@ mod tests {
     fn test_classify_error_generic() {
         let err = AppError::Translation("파싱 실패".into());
         assert_eq!(classify_error(&err), "translation");
+    }
+
+    #[test]
+    fn test_classify_error_session_conflict() {
+        let err = AppError::Process(
+            "Claude 프로세스 비정상 종료 (코드: Some(1)): \
+             Error: Session ID c78bf130-fd78-45d2-bdb2-ee002fcece2e is already in use."
+                .into(),
+        );
+        assert_eq!(classify_error(&err), "session_conflict");
+    }
+
+    #[test]
+    fn test_classify_error_session_conflict_case_insensitive() {
+        let err = AppError::Process("SESSION ID abc IS ALREADY IN USE".into());
+        assert_eq!(classify_error(&err), "session_conflict");
+    }
+
+    #[test]
+    fn test_classify_error_session_conflict_not_overmatched() {
+        // "session" 만 있다고 session_conflict 로 잡히면 안 됨
+        let err = AppError::Process("some session-related issue, not a conflict".into());
+        assert_ne!(classify_error(&err), "session_conflict");
+        // "already in use"만 있어도 마찬가지
+        let err2 = AppError::Process("port is already in use".into());
+        assert_ne!(classify_error(&err2), "session_conflict");
+    }
+
+    fn make_state_for_spawn(
+        chunks: Vec<SubtitleChunk>,
+        session_initialized: bool,
+        session_reuse_disabled: bool,
+        in_progress: usize,
+    ) -> BufferState {
+        let statuses: HashMap<_, _> = chunks
+            .iter()
+            .map(|c| (c.index, ChunkTranslationStatus::Pending))
+            .collect();
+        BufferState {
+            video_id: "test".into(),
+            chunks,
+            video_info: None,
+            model: None,
+            chunk_hashes: HashMap::new(),
+            current_position: 0.0,
+            statuses,
+            in_progress,
+            session_id: 0,
+            claude_session_id: "test-session".into(),
+            session_initialized,
+            session_reuse_disabled,
+            rate_limited_until: None,
+        }
+    }
+
+    #[test]
+    fn test_can_spawn_bootstrap_guard_blocks_second() {
+        let chunks = make_chunks(5);
+        // 첫 청크 spawn 직후(in_progress=1) session_initialized=false → guard 발동
+        let state = make_state_for_spawn(chunks, false, false, 1);
+        assert!(!can_spawn_in_state(&state, 4));
+    }
+
+    #[test]
+    fn test_can_spawn_bootstrap_guard_allows_first() {
+        let chunks = make_chunks(5);
+        // 아직 아무것도 spawn 안 됨(in_progress=0) → 첫 번째는 허용
+        let state = make_state_for_spawn(chunks, false, false, 0);
+        assert!(can_spawn_in_state(&state, 4));
+    }
+
+    #[test]
+    fn test_can_spawn_parallel_after_bootstrap() {
+        let chunks = make_chunks(5);
+        // session_initialized=true → 여러 개 병렬 spawn 허용
+        let state = make_state_for_spawn(chunks, true, false, 2);
+        assert!(can_spawn_in_state(&state, 4));
+    }
+
+    #[test]
+    fn test_can_spawn_respects_effective_concurrent() {
+        let chunks = make_chunks(5);
+        // 동시 한도 도달
+        let state = make_state_for_spawn(chunks, true, false, 4);
+        assert!(!can_spawn_in_state(&state, 4));
+    }
+
+    #[test]
+    fn test_can_spawn_reuse_disabled_skips_bootstrap_guard() {
+        let chunks = make_chunks(5);
+        // 세션 재사용이 꺼져 있으면 bootstrap guard도 무효 — 여러 개 동시 spawn 가능
+        let state = make_state_for_spawn(chunks, false, true, 2);
+        assert!(can_spawn_in_state(&state, 4));
+    }
+
+    #[tokio::test]
+    async fn test_handle_error_session_conflict_disables_reuse() {
+        let mgr = BufferManager::new();
+        mgr.init("vid1".into(), make_chunks(3), None, vec![], None)
+            .await;
+
+        // 첫 청크가 InProgress 상태라고 가정
+        {
+            let mut lock = mgr.state.lock().await;
+            let state = lock.as_mut().unwrap();
+            state.statuses.insert(0, ChunkTranslationStatus::InProgress);
+            state.in_progress = 1;
+        }
+
+        let err = AppError::Process(
+            "Claude 프로세스 비정상 종료 (코드: Some(1)): \
+             Error: Session ID abc is already in use."
+                .into(),
+        );
+
+        // AppHandle 없이 상태만 검증하기 위해 handle_error 내부 로직을 수동 시뮬레이트.
+        // (handle_error는 app.emit을 호출하지만 state 변이만 여기서 검증)
+        {
+            let mut lock = mgr.state.lock().await;
+            let state = lock.as_mut().unwrap();
+            state.statuses.insert(0, ChunkTranslationStatus::Error(1));
+            state.in_progress = state.in_progress.saturating_sub(1);
+            let error_kind = classify_error(&err);
+            if error_kind == "session_conflict" {
+                state.session_reuse_disabled = true;
+            }
+            state.session_initialized = true;
+        }
+
+        let lock = mgr.state.lock().await;
+        let state = lock.as_ref().unwrap();
+        assert!(state.session_reuse_disabled, "충돌 감지 후 재사용 비활성");
+        assert!(state.session_initialized, "bootstrap 플래그 해제");
+        assert_eq!(state.in_progress, 0);
+        assert_eq!(state.statuses[&0], ChunkTranslationStatus::Error(1));
+    }
+
+    #[tokio::test]
+    async fn test_handle_error_generic_keeps_session_reuse() {
+        let mgr = BufferManager::new();
+        mgr.init("vid1".into(), make_chunks(3), None, vec![], None)
+            .await;
+
+        {
+            let mut lock = mgr.state.lock().await;
+            let state = lock.as_mut().unwrap();
+            state.statuses.insert(0, ChunkTranslationStatus::InProgress);
+            state.in_progress = 1;
+        }
+
+        let err = AppError::Translation("JSONL 파싱 실패".into());
+
+        {
+            let mut lock = mgr.state.lock().await;
+            let state = lock.as_mut().unwrap();
+            state.statuses.insert(0, ChunkTranslationStatus::Error(1));
+            state.in_progress = state.in_progress.saturating_sub(1);
+            let error_kind = classify_error(&err);
+            if error_kind == "session_conflict" {
+                state.session_reuse_disabled = true;
+            }
+            state.session_initialized = true;
+        }
+
+        let lock = mgr.state.lock().await;
+        let state = lock.as_ref().unwrap();
+        assert!(
+            !state.session_reuse_disabled,
+            "일반 에러는 세션 재사용 유지"
+        );
+        assert!(state.session_initialized, "첫 청크 에러 후 bootstrap 해제");
     }
 
     #[tokio::test]
