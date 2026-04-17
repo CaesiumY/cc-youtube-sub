@@ -114,7 +114,15 @@ impl ClaudeAdapter {
             }
         }
 
-        let mut args = vec!["--print", "-", "--output-format", "stream-json"];
+        // 최신 Claude CLI(v2.1+)는 `--print` + `--output-format stream-json` 조합에
+        // `--verbose` 플래그를 필수로 요구한다. 없으면 "requires --verbose" 에러 반환.
+        let mut args = vec![
+            "--print",
+            "-",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ];
         if let Some(m) = model {
             args.push("--model");
             args.push(m);
