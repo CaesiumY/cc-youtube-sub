@@ -23,8 +23,8 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   currentTime: 0,
   isFullscreen: false,
   playerState: -1,
-  showOriginal: false,
-  subtitleSize: 1.25, // --subtitle-size 기본값 (20px)
+  showOriginal: true,
+  subtitleSize: 1.5, // --subtitle-size 기본값 (24px)
 
   setCurrentTime: (time) => set({ currentTime: time }),
   setFullscreen: (value) => set({ isFullscreen: value }),

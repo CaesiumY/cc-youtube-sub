@@ -47,8 +47,8 @@ mod integration_tests {
         previous_context: Option<&[SubtitleLine]>,
         model: Option<&str>,
     ) -> Vec<TranslationEntry> {
-        let prompt = build_prompt(chunk, video_info, previous_context);
-        let raw = ClaudeAdapter::execute(&prompt, 120, model)
+        let prompt = build_prompt(chunk, video_info, previous_context, false);
+        let raw = ClaudeAdapter::execute(&prompt, 120, model, None, false)
             .await
             .expect("Claude subprocess 실행 실패");
         let json_text = extract_text_from_jsonl(&raw).expect("JSONL 파싱 실패");
@@ -183,5 +183,137 @@ mod integration_tests {
                 e.start, e.original, e.translated
             );
         }
+    }
+
+    /// **핵심 품질 검증 테스트**.
+    ///
+    /// 자동 자막 영상(`mBHRPeg8zPU` — Fireship "Anthropic leaks Claude's source code")을
+    /// 대상으로 fetch → 문장 재구성 → 청크 분할 → 번역까지 한 사이클을 돌린다.
+    /// stdout 로그를 사람(Claude)이 읽고 품질을 판단한다:
+    /// 1) 병합 후 라인들이 문장 단위로 완결된가?
+    /// 2) 청크 텍스트가 자연스러운 문단으로 읽히는가?
+    /// 3) 번역이 라인 단편이 아니라 문맥 있는 문장 흐름인가?
+    /// 4) 고유명사/전문용어가 일관되게 번역되었는가?
+    ///
+    /// 실행: `cargo test --lib test_auto_caption_sentence_merge_and_translate -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn test_auto_caption_sentence_merge_and_translate() {
+        const VIDEO_ID: &str = "mBHRPeg8zPU";
+
+        eprintln!("\n======== [V3] 자동 자막 문장 재구성 + 번역 품질 검증 ========");
+        eprintln!("영상: https://youtu.be/{}\n", VIDEO_ID);
+
+        // [1] fetch_subtitles — 내부적으로 is_auto 감지 + merge_into_sentences 적용
+        eprintln!("[1] 자막 fetch 시작...");
+        let lines = fetch_subtitles(VIDEO_ID).await.expect("자막 fetch 실패");
+        assert!(!lines.is_empty(), "자막이 비어 있으면 안 됨");
+        eprintln!("[1] 완료: {} lines (postprocess 적용 후)", lines.len());
+
+        let total_duration: f64 = lines
+            .last()
+            .map(|l| l.end - lines.first().unwrap().start)
+            .unwrap_or(0.0);
+        let avg_duration = if lines.is_empty() {
+            0.0
+        } else {
+            total_duration / (lines.len() as f64)
+        };
+        eprintln!(
+            "    평균 라인 duration: {:.2}s, 전체 길이: {:.1}s",
+            avg_duration, total_duration
+        );
+
+        eprintln!("--- 처음 15개 라인 (병합 결과) ---");
+        for (i, line) in lines.iter().take(15).enumerate() {
+            eprintln!(
+                "  #{:02} [{:>6.2}s → {:>6.2}s] ({:>2}자) {}",
+                i,
+                line.start,
+                line.end,
+                line.text.chars().count(),
+                line.text
+            );
+        }
+
+        // [2] split_into_chunks
+        let chunks = split_into_chunks(&lines);
+        assert!(!chunks.is_empty(), "청크가 비어 있으면 안 됨");
+        eprintln!("\n[2] {} chunks 생성", chunks.len());
+        for chunk in chunks.iter().take(2) {
+            let concat: String = chunk
+                .lines
+                .iter()
+                .map(|l| l.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!(
+                "    chunk {}: [{:.1}s-{:.1}s] {} lines",
+                chunk.index,
+                chunk.start_time,
+                chunk.end_time,
+                chunk.lines.len()
+            );
+            let preview = if concat.chars().count() > 300 {
+                let truncated: String = concat.chars().take(300).collect();
+                format!("{}...", truncated)
+            } else {
+                concat
+            };
+            eprintln!("      full text: {}", preview);
+        }
+
+        // [3] Claude 번역 (첫 청크)
+        eprintln!("\n[3] Claude CLI 번역 실행 (haiku, 첫 청크)...");
+        let first_chunk = &chunks[0];
+        let entries = translate_pipeline(first_chunk, None, None, Some("haiku")).await;
+
+        assert_eq!(
+            entries.len(),
+            first_chunk.lines.len(),
+            "청크 라인 수와 번역 결과 수가 일치해야 함"
+        );
+        for entry in &entries {
+            assert!(
+                contains_korean(&entry.translated),
+                "번역에 한국어가 포함되어야 함: {:?}",
+                entry.translated
+            );
+            assert!(entry.start >= 0.0 && entry.end > entry.start);
+        }
+
+        eprintln!("\n--- 첫 청크 번역 결과 ({} entries) ---", entries.len());
+        for entry in &entries {
+            eprintln!("  [{:>6.2}s → {:>6.2}s]", entry.start, entry.end);
+            eprintln!("    EN: {}", entry.original);
+            eprintln!("    KO: {}", entry.translated);
+        }
+
+        // [4] 두 번째 청크 번역 (맥락 연속성 확인)
+        if chunks.len() > 1 {
+            eprintln!("\n[4] Claude CLI 번역 (두 번째 청크, 이전 맥락 포함)...");
+            let second_chunk = &chunks[1];
+            let prev_ctx: Vec<SubtitleLine> = first_chunk
+                .lines
+                .iter()
+                .rev()
+                .take(8)
+                .rev()
+                .cloned()
+                .collect();
+            let entries2 =
+                translate_pipeline(second_chunk, None, Some(&prev_ctx), Some("haiku")).await;
+            eprintln!(
+                "\n--- 두 번째 청크 번역 결과 ({} entries) ---",
+                entries2.len()
+            );
+            for entry in &entries2 {
+                eprintln!("  [{:>6.2}s → {:>6.2}s]", entry.start, entry.end);
+                eprintln!("    EN: {}", entry.original);
+                eprintln!("    KO: {}", entry.translated);
+            }
+        }
+
+        eprintln!("\n======== 테스트 완료 — 출력 로그로 품질 판단 ========\n");
     }
 }

@@ -42,6 +42,9 @@ async fn fetch_video_info(video_id: String) -> Result<VideoInfo, AppError> {
 }
 
 /// 단일 청크 번역: 프롬프트 구성 → Claude 실행 → JSONL 파싱 → 검증
+///
+/// 이 커맨드는 BufferManager를 거치지 않는 독립 호출용 (브라우저 mock 폴백 등).
+/// 세션 재사용은 BufferManager 경로에서만 적용된다.
 #[tauri::command]
 async fn translate_chunk(
     chunk: SubtitleChunk,
@@ -49,10 +52,16 @@ async fn translate_chunk(
     previous_context: Option<Vec<SubtitleLine>>,
     model: Option<String>,
 ) -> Result<Vec<TranslationEntry>, AppError> {
-    let prompt = build_prompt(&chunk, video_info.as_ref(), previous_context.as_deref());
+    let prompt = build_prompt(
+        &chunk,
+        video_info.as_ref(),
+        previous_context.as_deref(),
+        false,
+    );
 
     let raw_output =
-        claude::adapter::ClaudeAdapter::execute(&prompt, 120, model.as_deref()).await?;
+        claude::adapter::ClaudeAdapter::execute(&prompt, 120, model.as_deref(), None, false)
+            .await?;
 
     let json_text = extract_text_from_jsonl(&raw_output)
         .map_err(|e| AppError::Translation(format!("JSONL 파싱 실패: {}", e)))?;

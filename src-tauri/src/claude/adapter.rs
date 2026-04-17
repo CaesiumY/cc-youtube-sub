@@ -102,11 +102,18 @@ impl ClaudeAdapter {
     /// - `--print -`: stdin에서 프롬프트를 읽어 단일 응답 출력
     /// - `--output-format stream-json`: JSONL 스트림 형식 출력
     /// - `--model`: 사용할 모델 alias (haiku, sonnet)
+    /// - `session_id` + `is_first_in_session`: 같은 영상의 청크들이 동일 Claude 세션을
+    ///   재사용하여 맥락 연속성 확보.
+    ///   - `is_first_in_session = true` → `--session-id <uuid>`로 세션 생성
+    ///   - `is_first_in_session = false` → `--resume <uuid> --fork-session`으로
+    ///     부모 세션의 맥락은 계승하면서 fork된 세션에 기록 (동시 호출 충돌 회피)
     /// - `CLAUDECODE` 환경변수 제거: Paperclip 패턴 (재귀 방지)
     pub async fn execute(
         prompt: &str,
         timeout_secs: u64,
         model: Option<&str>,
+        session_id: Option<&str>,
+        is_first_in_session: bool,
     ) -> Result<String, AppError> {
         if let Some(m) = model {
             if !ALLOWED_MODELS.contains(&m) {
@@ -123,6 +130,17 @@ impl ClaudeAdapter {
             "stream-json",
             "--verbose",
         ];
+        if let Some(uuid) = session_id {
+            if is_first_in_session {
+                args.push("--session-id");
+                args.push(uuid);
+            } else {
+                args.push("--resume");
+                args.push(uuid);
+                // fork-session: 부모 세션 맥락은 계승, 새 분기에 기록 → 동시 실행 안전
+                args.push("--fork-session");
+            }
+        }
         if let Some(m) = model {
             args.push("--model");
             args.push(m);

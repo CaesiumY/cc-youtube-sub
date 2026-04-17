@@ -6,7 +6,9 @@ use crate::error::AppError;
 use crate::subtitle::SubtitleLine;
 use crate::translate::VideoInfo;
 
-use super::parser::normalize_transcript;
+use super::parser::{
+    merge_into_sentences, normalize_transcript, split_lines_on_sentence_boundaries,
+};
 
 // ── ANDROID InnerTube 클라이언트 메타데이터 ──────────────
 //
@@ -50,6 +52,9 @@ struct CaptionTrack {
     base_url: String,
     #[serde(rename = "languageCode")]
     language_code: String,
+    /// `"asr"` = auto-generated (speech recognition). 수동 자막은 이 필드가 없음.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 /// YouTube 영상의 영어 자막을 fetch하여 정규화된 SubtitleLine 목록으로 반환
@@ -76,13 +81,20 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
 
     let api = YouTubeTranscriptApi::new(None, None, Some(client))?;
 
-    // 1차: 직접 fetch 시도 (InnerTube가 정상 동작하는 경우 빠름)
+    // 1차: 직접 fetch 시도 (InnerTube가 정상 동작하는 경우 빠름).
+    // `fetch_transcript`는 내부적으로 find_transcript를 사용 — manual 자막을 우선하고
+    // 없으면 auto-generated로 폴백한다 (yt-transcript-rs의 TranscriptList 설계).
     match api.fetch_transcript(video_id, &["en"], false).await {
         Ok(transcript) => {
             let lines = normalize_transcript(&transcript.snippets);
             if !lines.is_empty() {
-                eprintln!("[fetch] 1차 성공: {} lines", lines.len());
-                return Ok(lines);
+                let is_auto = transcript.is_generated;
+                eprintln!(
+                    "[fetch] 1차 성공: {} lines (is_auto={})",
+                    lines.len(),
+                    is_auto
+                );
+                return Ok(postprocess_lines(lines, is_auto));
             }
             eprintln!("[fetch] 1차: transcript OK but 0 lines after normalize");
         }
@@ -100,6 +112,7 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
     let transcript = transcript_list.find_transcript(&["en"]).map_err(|e| {
         AppError::CaptionFetch(format!("영어 자막을 찾을 수 없습니다: {:?}", e.reason))
     })?;
+    let is_auto = transcript.is_generated;
 
     // 2-a: Transcript::fetch() 시도 (라이브러리 내장 — InnerTube 재요청)
     // cookie_store 활성화: YouTube CONSENT 쿠키를 자동 처리하여 이후 timedtext 요청에서
@@ -114,8 +127,12 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
         Ok(fetched) => {
             let lines = normalize_transcript(&fetched.snippets);
             if !lines.is_empty() {
-                eprintln!("[fetch] 2a 성공: {} lines", lines.len());
-                return Ok(lines);
+                eprintln!(
+                    "[fetch] 2a 성공: {} lines (is_auto={})",
+                    lines.len(),
+                    is_auto
+                );
+                return Ok(postprocess_lines(lines, is_auto));
             }
             eprintln!("[fetch] 2a: fetch OK but 0 lines after normalize");
         }
@@ -151,8 +168,12 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
         if let Ok(snippets) = parser.parse(&xml_text) {
             let lines = normalize_transcript(&snippets);
             if !lines.is_empty() {
-                eprintln!("[fetch] 2b 성공: {} lines", lines.len());
-                return Ok(lines);
+                eprintln!(
+                    "[fetch] 2b 성공: {} lines (is_auto={})",
+                    lines.len(),
+                    is_auto
+                );
+                return Ok(postprocess_lines(lines, is_auto));
             }
         }
     }
@@ -162,9 +183,13 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
     // 않는 경우, ANDROID 클라이언트는 캡션을 반환하는 것으로 알려져 있음 (yt-dlp 방식)
     eprintln!("[fetch] 3차: ANDROID InnerTube 직접 요청 시도");
     match fetch_via_android_innertube(video_id, &lib_client).await {
-        Ok(lines) => {
-            eprintln!("[fetch] 3차 성공: {} lines", lines.len());
-            return Ok(lines);
+        Ok((lines, is_auto)) => {
+            eprintln!(
+                "[fetch] 3차 성공: {} lines (is_auto={})",
+                lines.len(),
+                is_auto
+            );
+            return Ok(postprocess_lines(lines, is_auto));
         }
         Err(e) => {
             eprintln!("[fetch] 3차 실패: {}", e);
@@ -176,14 +201,33 @@ pub async fn fetch_subtitles(video_id: &str) -> Result<Vec<SubtitleLine>, AppErr
     ))
 }
 
+/// 자동 자막이면 문장 경계에서 먼저 쪼개고 시간 단위로 다시 병합한다.
+/// 수동 자막은 이미 문장 단위로 정돈되어 있어 그대로 반환.
+///
+/// 순서:
+/// 1. `split_lines_on_sentence_boundaries`: snippet 내부 구두점으로 세분화
+/// 2. `merge_into_sentences`: 종결 단위/시간 한도로 재병합
+///
+/// 결과적으로 allang.ai 수준의 문장 단위 자막 블록이 만들어진다.
+fn postprocess_lines(lines: Vec<SubtitleLine>, is_auto: bool) -> Vec<SubtitleLine> {
+    if is_auto {
+        let split = split_lines_on_sentence_boundaries(lines);
+        merge_into_sentences(split)
+    } else {
+        lines
+    }
+}
+
 /// ANDROID InnerTube 클라이언트로 캡션 URL을 가져와 자막을 fetch
 ///
 /// WEB 클라이언트가 캡션을 미반환할 때 ANDROID 클라이언트는 반환하는 경우가 있다.
 /// yt-dlp가 사용하는 것과 동일한 접근 방식.
+///
+/// 반환: `(lines, is_auto_generated)` — 호출측에서 자동 자막일 때만 문장 병합을 적용.
 async fn fetch_via_android_innertube(
     video_id: &str,
     client: &reqwest::Client,
-) -> Result<Vec<SubtitleLine>, AppError> {
+) -> Result<(Vec<SubtitleLine>, bool), AppError> {
     // 클라이언트 메타데이터는 파일 상단 const 블록에서 관리 (업데이트 시 그쪽만 수정).
     let body = serde_json::json!({
         "context": {
@@ -235,12 +279,19 @@ async fn fetch_via_android_innertube(
         ));
     }
 
-    // 영어 트랙 찾기
+    // 영어 트랙 선택 — manual 우선, 없으면 auto, 그래도 없으면 첫 트랙.
+    // `kind == "asr"`는 YouTube가 자동 생성한 자막을 표시 (speech recognition).
+    let is_english =
+        |t: &&CaptionTrack| t.language_code == "en" || t.language_code.starts_with("en-");
+    let is_manual = |t: &&CaptionTrack| t.kind.as_deref() != Some("asr");
+
     let en_track = tracks
         .iter()
-        .find(|t| t.language_code == "en" || t.language_code.starts_with("en-"))
+        .find(|t| is_english(t) && is_manual(t))
+        .or_else(|| tracks.iter().find(is_english))
         .or_else(|| tracks.first())
         .ok_or_else(|| AppError::CaptionFetch("영어 캡션 트랙을 찾을 수 없습니다".into()))?;
+    let is_auto = en_track.kind.as_deref() == Some("asr");
 
     // ANDROID 클라이언트가 반환한 baseUrl은 `fmt=srv3`로 끝나는 경우가 많은데,
     // 이 포맷은 빈 응답을 내는 경우가 있다. `fmt` 파라미터를 제거하면
@@ -278,7 +329,7 @@ async fn fetch_via_android_innertube(
         ));
     }
 
-    Ok(lines)
+    Ok((lines, is_auto))
 }
 
 /// timedtext URL에서 `fmt=xxx` 쿼리 파라미터를 제거한다.

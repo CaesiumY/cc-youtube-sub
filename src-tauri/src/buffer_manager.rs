@@ -15,11 +15,15 @@ use crate::translate::validator::validate_translation;
 use crate::translate::{TranslationEntry, VideoInfo};
 
 /// 현재 청크 이후 미리 번역할 청크 수
-const LOOK_AHEAD: usize = 3;
+const LOOK_AHEAD: usize = 6;
 /// 동시 번역 프로세스 최대 수
-const MAX_CONCURRENT: usize = 2;
+const MAX_CONCURRENT: usize = 4;
+/// rate limit 감지 시 임시로 내려갈 동시 실행 수
+const MAX_CONCURRENT_BACKOFF: usize = 1;
 /// 청크당 최대 재시도 횟수
 const MAX_RETRIES: u32 = 3;
+/// rate limit 감지 후 백오프 유지 시간
+const RATE_LIMIT_COOLDOWN_SECS: u64 = 45;
 
 // ── Tauri 이벤트 페이로드 ───────────────────────────
 
@@ -70,6 +74,12 @@ struct BufferState {
     statuses: HashMap<i32, ChunkTranslationStatus>,
     in_progress: usize,
     session_id: u64,
+    /// Claude CLI 세션 UUID — 같은 영상의 모든 청크가 공유하여 맥락 연속성 확보
+    claude_session_id: String,
+    /// 세션이 생성되었는지 (첫 청크 번역 성공 여부)
+    session_initialized: bool,
+    /// rate limit 백오프 종료 시각
+    rate_limited_until: Option<std::time::Instant>,
 }
 
 // ── BufferManager 공개 API ──────────────────────────
@@ -126,6 +136,9 @@ impl BufferManager {
             statuses,
             in_progress: 0,
             session_id: 0,
+            claude_session_id: uuid::Uuid::new_v4().to_string(),
+            session_initialized: false,
+            rate_limited_until: None,
         });
     }
 
@@ -152,11 +165,23 @@ impl BufferManager {
 
             state.current_position = current_time;
 
+            // rate limit 백오프 확인 — 쿨다운 중이면 동시성을 1로 축소
+            let effective_concurrent = match state.rate_limited_until {
+                Some(until) if std::time::Instant::now() < until => MAX_CONCURRENT_BACKOFF,
+                _ => {
+                    // 쿨다운 만료 시 필드 정리
+                    if state.rate_limited_until.is_some() {
+                        state.rate_limited_until = None;
+                    }
+                    MAX_CONCURRENT
+                }
+            };
+
             let priority = get_priority_chunks(state);
             let mut tasks = Vec::new();
 
             for idx in priority {
-                if state.in_progress >= MAX_CONCURRENT {
+                if state.in_progress >= effective_concurrent {
                     break;
                 }
 
@@ -176,15 +201,22 @@ impl BufferManager {
                     .insert(idx, ChunkTranslationStatus::InProgress);
                 state.in_progress += 1;
 
-                let video_info_for_chunk = if idx == 0 {
+                let is_first_in_session = !state.session_initialized;
+                // 세션 첫 호출에만 영상 정보/이전 맥락을 전달 (이후는 세션이 기억)
+                let video_info_for_chunk = if is_first_in_session {
                     state.video_info.clone()
                 } else {
                     None
                 };
-                let prev_context = get_previous_context(&state.chunks, idx);
+                let prev_context = if is_first_in_session {
+                    get_previous_context(&state.chunks, idx)
+                } else {
+                    None
+                };
                 let session_id = state.session_id;
                 let video_id = state.video_id.clone();
                 let chunk_hash = state.chunk_hashes.get(&idx).cloned();
+                let claude_session_id = state.claude_session_id.clone();
 
                 tasks.push(SpawnTask {
                     chunk,
@@ -196,6 +228,8 @@ impl BufferManager {
                     chunk_hash,
                     retry_count,
                     chunk_index: idx,
+                    claude_session_id,
+                    is_first_in_session,
                 });
             }
 
@@ -223,6 +257,8 @@ impl BufferManager {
                     task.video_info.as_ref(),
                     task.prev_context.as_deref(),
                     task.model.as_deref(),
+                    Some(&task.claude_session_id),
+                    task.is_first_in_session,
                 )
                 .await;
 
@@ -321,6 +357,8 @@ impl BufferManager {
             .statuses
             .insert(chunk_index, ChunkTranslationStatus::Done);
         state.in_progress = state.in_progress.saturating_sub(1);
+        // 첫 청크 번역 성공 → 세션이 생성되었으므로 이후는 --resume 모드로
+        state.session_initialized = true;
 
         // 캐시 저장 (실패해도 무시)
         if let Some(hash) = chunk_hash {
@@ -372,6 +410,14 @@ impl BufferManager {
 
         let error_kind = classify_error(error);
 
+        // rate limit 감지 시 쿨다운 시작 — update_position이 MAX_CONCURRENT_BACKOFF로 제한
+        if error_kind == "rate_limit" {
+            state.rate_limited_until = Some(
+                std::time::Instant::now()
+                    + std::time::Duration::from_secs(RATE_LIMIT_COOLDOWN_SECS),
+            );
+        }
+
         let _ = app.emit(
             "buffer-error",
             BufferErrorEvent {
@@ -406,6 +452,8 @@ struct SpawnTask {
     chunk_hash: Option<String>,
     retry_count: u32,
     chunk_index: i32,
+    claude_session_id: String,
+    is_first_in_session: bool,
 }
 
 // ── 헬퍼 함수 ───────────────────────────────────────
@@ -437,7 +485,7 @@ fn get_priority_chunks(state: &BufferState) -> Vec<i32> {
     result
 }
 
-/// 이전 청크의 마지막 5줄을 context로 추출
+/// 이전 청크의 마지막 8줄을 context로 추출 (세션 첫 호출에만 사용)
 fn get_previous_context(chunks: &[SubtitleChunk], current_index: i32) -> Option<Vec<SubtitleLine>> {
     if current_index == 0 {
         return None;
@@ -445,7 +493,7 @@ fn get_previous_context(chunks: &[SubtitleChunk], current_index: i32) -> Option<
     chunks
         .iter()
         .find(|c| c.index == current_index - 1)
-        .map(|c| c.lines.iter().rev().take(5).rev().cloned().collect())
+        .map(|c| c.lines.iter().rev().take(8).rev().cloned().collect())
 }
 
 /// 에러 메시지에서 종류를 분류 (프론트엔드 UI 분기에 사용)
@@ -475,9 +523,12 @@ async fn translate_chunk_internal(
     video_info: Option<&VideoInfo>,
     previous_context: Option<&[SubtitleLine]>,
     model: Option<&str>,
+    claude_session_id: Option<&str>,
+    is_first_in_session: bool,
 ) -> Result<Vec<TranslationEntry>, AppError> {
-    let prompt = build_prompt(chunk, video_info, previous_context);
-    let raw_output = ClaudeAdapter::execute(&prompt, 120, model).await?;
+    let prompt = build_prompt(chunk, video_info, previous_context, !is_first_in_session);
+    let raw_output =
+        ClaudeAdapter::execute(&prompt, 120, model, claude_session_id, is_first_in_session).await?;
     let json_text = extract_text_from_jsonl(&raw_output)
         .map_err(|e| AppError::Translation(format!("JSONL 파싱 실패: {}", e)))?;
     validate_translation(&json_text)
@@ -522,10 +573,14 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
+            claude_session_id: "test-session".into(),
+            session_initialized: false,
+            rate_limited_until: None,
         };
 
         let result = get_priority_chunks(&state);
-        assert_eq!(result, vec![0, 1, 2, 3]);
+        // LOOK_AHEAD=6 → offsets 0..=6
+        assert_eq!(result, vec![0, 1, 2, 3, 4, 5, 6]);
     }
 
     #[test]
@@ -548,10 +603,14 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
+            claude_session_id: "test-session".into(),
+            session_initialized: false,
+            rate_limited_until: None,
         };
 
         let result = get_priority_chunks(&state);
-        assert_eq!(result, vec![2, 3]);
+        // current_idx=0, LOOK_AHEAD=6 → offsets 0..=6, but 0=Done, 1=Cached skipped
+        assert_eq!(result, vec![2, 3, 4, 5, 6]);
     }
 
     #[test]
@@ -575,10 +634,14 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
+            claude_session_id: "test-session".into(),
+            session_initialized: false,
+            rate_limited_until: None,
         };
 
         let result = get_priority_chunks(&state);
-        assert_eq!(result, vec![5, 6, 7, 8]);
+        // LOOK_AHEAD=6 → current_idx(5) + offsets 0..=6 = [5..=11], but max_idx=9
+        assert_eq!(result, vec![5, 6, 7, 8, 9]);
     }
 
     #[test]
@@ -602,6 +665,9 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
+            claude_session_id: "test-session".into(),
+            session_initialized: false,
+            rate_limited_until: None,
         };
 
         let result = get_priority_chunks(&state);
@@ -628,10 +694,14 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
+            claude_session_id: "test-session".into(),
+            session_initialized: false,
+            rate_limited_until: None,
         };
 
         let result = get_priority_chunks(&state);
-        assert_eq!(result, vec![0, 2, 3]);
+        // current_idx=0, LOOK_AHEAD=6, max_idx=4 → 0(retry),1(skip),2,3,4
+        assert_eq!(result, vec![0, 2, 3, 4]);
     }
 
     #[test]

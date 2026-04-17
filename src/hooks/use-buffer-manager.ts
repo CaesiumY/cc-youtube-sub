@@ -92,7 +92,12 @@ export function useBufferManager() {
       unlisteners.push(
         listen<BufferErrorEvent>("buffer-error", (event) => {
           const { chunk_index, error, error_kind, retryable } = event.payload;
-          console.error("[buffer-error]", { chunk_index, error, error_kind, retryable });
+          console.error("[buffer-error]", {
+            chunk_index,
+            error,
+            error_kind,
+            retryable,
+          });
           if (!retryable) {
             useTranslationStore.getState().setError(error);
           }
