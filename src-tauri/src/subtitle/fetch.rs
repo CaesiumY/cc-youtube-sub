@@ -8,6 +8,22 @@ use crate::translate::VideoInfo;
 
 use super::parser::normalize_transcript;
 
+// ── ANDROID InnerTube 클라이언트 메타데이터 ──────────────
+//
+// YOUTUBE_CLIENT_METADATA_LAST_UPDATED: 2026-04-16
+// 기준: yt-dlp 2026.01 (yt_dlp/extractor/youtube/_base.py)
+//
+// YouTube는 InnerTube 클라이언트 버전을 주기적으로 무효화한다. 3차 폴백이
+// HTTP 400을 다시 반환하기 시작하면 아래 상수들을 yt-dlp 최신 마스터 기준으로
+// 갱신하고 LAST_UPDATED 날짜만 바꾸면 된다.
+const ANDROID_CLIENT_NAME: &str = "ANDROID";
+const ANDROID_CLIENT_NAME_ID: &str = "3"; // X-YouTube-Client-Name 헤더 값
+const ANDROID_CLIENT_VERSION: &str = "21.02.35";
+const ANDROID_SDK_VERSION: u32 = 30;
+const ANDROID_OS_NAME: &str = "Android";
+const ANDROID_OS_VERSION: &str = "11";
+const ANDROID_USER_AGENT: &str = "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip";
+
 // ── ANDROID InnerTube 직접 요청용 타입 ──────────────
 
 /// YouTube InnerTube player 응답에서 캡션 트랙 추출용
@@ -168,16 +184,15 @@ async fn fetch_via_android_innertube(
     video_id: &str,
     client: &reqwest::Client,
 ) -> Result<Vec<SubtitleLine>, AppError> {
-    // yt-dlp 최신 버전 참고 (2026.01 기준): clientVersion/User-Agent 모두 최신 유지 필수.
-    // 오래된 버전(예: 19.09.37) 사용 시 YouTube가 HTTP 400으로 거부함.
+    // 클라이언트 메타데이터는 파일 상단 const 블록에서 관리 (업데이트 시 그쪽만 수정).
     let body = serde_json::json!({
         "context": {
             "client": {
-                "clientName": "ANDROID",
-                "clientVersion": "21.02.35",
-                "androidSdkVersion": 30,
-                "osName": "Android",
-                "osVersion": "11",
+                "clientName": ANDROID_CLIENT_NAME,
+                "clientVersion": ANDROID_CLIENT_VERSION,
+                "androidSdkVersion": ANDROID_SDK_VERSION,
+                "osName": ANDROID_OS_NAME,
+                "osVersion": ANDROID_OS_VERSION,
                 "hl": "en",
                 "gl": "US"
             }
@@ -188,12 +203,9 @@ async fn fetch_via_android_innertube(
     let resp = client
         .post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
         .header("Content-Type", "application/json")
-        .header(
-            "User-Agent",
-            "com.google.android.youtube/21.02.35 (Linux; U; Android 11) gzip",
-        )
-        .header("X-YouTube-Client-Name", "3") // ANDROID = 3
-        .header("X-YouTube-Client-Version", "21.02.35")
+        .header("User-Agent", ANDROID_USER_AGENT)
+        .header("X-YouTube-Client-Name", ANDROID_CLIENT_NAME_ID)
+        .header("X-YouTube-Client-Version", ANDROID_CLIENT_VERSION)
         .json(&body)
         .send()
         .await
@@ -273,6 +285,11 @@ async fn fetch_via_android_innertube(
 /// ANDROID 클라이언트가 반환하는 URL에 붙는 `fmt=srv3`가 빈 응답을 유발하는
 /// 케이스가 있어 기본 포맷으로 요청하기 위함.
 fn strip_fmt_param(url: &str) -> String {
+    // Fast path: fmt= 파라미터가 없으면 Vec 할당 없이 원본 그대로 반환.
+    // YouTube timedtext URL은 항상 소문자 `fmt=` 를 쓰므로 대소문자 구분 불필요.
+    if !url.contains("fmt=") {
+        return url.to_string();
+    }
     let Some(q_start) = url.find('?') else {
         return url.to_string();
     };
