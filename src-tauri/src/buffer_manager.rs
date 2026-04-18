@@ -407,54 +407,22 @@ impl BufferManager {
         error: &AppError,
         app: &tauri::AppHandle,
     ) {
-        let mut lock = self.state.lock().await;
-        let state = match lock.as_mut() {
-            Some(s) if s.session_id == task_session_id => s,
-            _ => return,
+        let transition = {
+            let mut lock = self.state.lock().await;
+            let state = match lock.as_mut() {
+                Some(s) if s.session_id == task_session_id => s,
+                _ => return,
+            };
+            apply_error_to_state(state, chunk_index, prev_retry_count, error)
         };
-
-        let new_retry = prev_retry_count + 1;
-        let retryable = new_retry < MAX_RETRIES;
-
-        state
-            .statuses
-            .insert(chunk_index, ChunkTranslationStatus::Error(new_retry));
-        state.in_progress = state.in_progress.saturating_sub(1);
-
-        let error_kind = classify_error(error);
-
-        // 세션 충돌 감지 시 폴백: 이후 청크는 세션 없이 독립 실행.
-        // 이 청크는 그대로 retryable 상태로 두면 다음 폴링에서 독립 모드로 재시도됨.
-        if error_kind == "session_conflict" {
-            state.session_reuse_disabled = true;
-            eprintln!(
-                "[buffer] 세션 충돌 감지, 영상 나머지 번역을 독립 모드로 폴백 (chunk {})",
-                chunk_index
-            );
-        }
-
-        // rate limit 감지 시 쿨다운 시작 — update_position이 MAX_CONCURRENT_BACKOFF로 제한
-        if error_kind == "rate_limit" {
-            state.rate_limited_until = Some(
-                std::time::Instant::now()
-                    + std::time::Duration::from_secs(RATE_LIMIT_COOLDOWN_SECS),
-            );
-        }
-
-        // 주의: 여기서 session_initialized를 강제로 true로 설정하지 않는다.
-        // 네트워크/CLI 실패 등으로 Claude 세션이 실제로 생성되지 않은 상태에서 true로 두면
-        // 이후 재시도가 --resume을 시도해 "세션 없음"으로 영구 실패로 이어질 수 있다.
-        // 대신 세션 충돌이 실제로 재발할 경우(session_conflict)에만 session_reuse_disabled
-        // 폴백이 작동하여 독립 모드로 전환되므로 안전. session_initialized는 handle_completion
-        // (실제 세션 생성 확인)에서만 true로 설정된다.
 
         let _ = app.emit(
             "buffer-error",
             BufferErrorEvent {
                 chunk_index,
                 error: error.to_string(),
-                error_kind,
-                retryable,
+                error_kind: transition.error_kind,
+                retryable: transition.retryable,
                 session_id: task_session_id,
             },
         );
@@ -525,6 +493,61 @@ fn get_previous_context(chunks: &[SubtitleChunk], current_index: i32) -> Option<
         .iter()
         .find(|c| c.index == current_index - 1)
         .map(|c| c.lines.iter().rev().take(8).rev().cloned().collect())
+}
+
+/// `apply_error_to_state`의 결과 — `handle_error`가 이벤트 emit에 사용.
+#[derive(Debug, Clone, PartialEq)]
+struct ErrorTransition {
+    error_kind: String,
+    retryable: bool,
+}
+
+/// `handle_error`의 state 변이 로직만 분리한 순수 함수.
+///
+/// 테스트가 진짜 함수를 호출할 수 있도록 `AppHandle` 의존성(emit)을 분리했다.
+/// 이벤트 emit은 호출측에서 처리.
+///
+/// 동작:
+/// - 청크 상태를 `Error(new_retry)`로 전이, `in_progress` 감소
+/// - error_kind 분류 후 session_conflict면 `session_reuse_disabled = true` 폴백
+/// - rate_limit이면 쿨다운 타이머 설정
+/// - **`session_initialized`는 변경하지 않는다** — 세션이 실제 생성되지 않은 상태에서
+///   true로 두면 이후 `--resume`이 영구 실패로 이어질 수 있기 때문. 성공 시
+///   `handle_completion`에서만 true로 설정.
+fn apply_error_to_state(
+    state: &mut BufferState,
+    chunk_index: i32,
+    prev_retry_count: u32,
+    error: &AppError,
+) -> ErrorTransition {
+    let new_retry = prev_retry_count + 1;
+    let retryable = new_retry < MAX_RETRIES;
+
+    state
+        .statuses
+        .insert(chunk_index, ChunkTranslationStatus::Error(new_retry));
+    state.in_progress = state.in_progress.saturating_sub(1);
+
+    let error_kind = classify_error(error);
+
+    if error_kind == "session_conflict" {
+        state.session_reuse_disabled = true;
+        eprintln!(
+            "[buffer] 세션 충돌 감지, 영상 나머지 번역을 독립 모드로 폴백 (chunk {})",
+            chunk_index
+        );
+    }
+
+    if error_kind == "rate_limit" {
+        state.rate_limited_until = Some(
+            std::time::Instant::now() + std::time::Duration::from_secs(RATE_LIMIT_COOLDOWN_SECS),
+        );
+    }
+
+    ErrorTransition {
+        error_kind,
+        retryable,
+    }
 }
 
 /// 에러 메시지에서 종류를 분류 (프론트엔드 UI 분기 + BufferManager 폴백 로직에 사용)
@@ -886,13 +909,126 @@ mod tests {
         assert!(can_spawn_in_state(&state, 4));
     }
 
+    fn base_state_for_error_tests() -> BufferState {
+        let chunks = make_chunks(3);
+        let statuses: HashMap<_, _> = chunks
+            .iter()
+            .map(|c| (c.index, ChunkTranslationStatus::Pending))
+            .collect();
+        BufferState {
+            video_id: "test".into(),
+            chunks,
+            video_info: None,
+            model: None,
+            chunk_hashes: HashMap::new(),
+            current_position: 0.0,
+            statuses,
+            in_progress: 1, // 첫 청크 InProgress 가정
+            session_id: 0,
+            claude_session_id: "test-session".into(),
+            session_initialized: false,
+            session_reuse_disabled: false,
+            rate_limited_until: None,
+        }
+    }
+
+    #[test]
+    fn test_apply_error_session_conflict_disables_reuse() {
+        let mut state = base_state_for_error_tests();
+        state.statuses.insert(0, ChunkTranslationStatus::InProgress);
+
+        let err = AppError::Process(
+            "Claude 프로세스 비정상 종료 (코드: Some(1)): \
+             Error: Session ID abc is already in use."
+                .into(),
+        );
+        let transition = apply_error_to_state(&mut state, 0, 0, &err);
+
+        assert_eq!(transition.error_kind, "session_conflict");
+        assert!(transition.retryable);
+        assert!(state.session_reuse_disabled, "충돌 감지 후 재사용 비활성");
+        assert!(
+            !state.session_initialized,
+            "session_initialized는 변경되지 않아야 함 — \
+             네트워크/CLI 실패로 세션 미생성 시 resume 영구 실패 방지"
+        );
+        assert_eq!(state.in_progress, 0);
+        assert_eq!(state.statuses[&0], ChunkTranslationStatus::Error(1));
+    }
+
+    #[test]
+    fn test_apply_error_generic_keeps_session_reuse() {
+        let mut state = base_state_for_error_tests();
+        state.statuses.insert(0, ChunkTranslationStatus::InProgress);
+
+        let err = AppError::Translation("JSONL 파싱 실패".into());
+        let transition = apply_error_to_state(&mut state, 0, 0, &err);
+
+        assert_eq!(transition.error_kind, "translation");
+        assert!(transition.retryable);
+        assert!(
+            !state.session_reuse_disabled,
+            "일반 에러는 세션 재사용 유지"
+        );
+        assert!(
+            !state.session_initialized,
+            "handle_error는 session_initialized를 변경하지 않음"
+        );
+    }
+
+    #[test]
+    fn test_apply_error_rate_limit_sets_cooldown() {
+        let mut state = base_state_for_error_tests();
+        state.statuses.insert(0, ChunkTranslationStatus::InProgress);
+        assert!(state.rate_limited_until.is_none());
+
+        let err = AppError::Process("Claude rate limit exceeded".into());
+        let transition = apply_error_to_state(&mut state, 0, 0, &err);
+
+        assert_eq!(transition.error_kind, "rate_limit");
+        assert!(state.rate_limited_until.is_some(), "쿨다운 타이머 설정됨");
+    }
+
+    #[test]
+    fn test_apply_error_never_mutates_session_initialized() {
+        // 회귀 방지: session_initialized를 true로 두고 에러 호출 → 여전히 true
+        let mut state = base_state_for_error_tests();
+        state.statuses.insert(0, ChunkTranslationStatus::InProgress);
+        state.session_initialized = true;
+
+        let err = AppError::Process("some error".into());
+        apply_error_to_state(&mut state, 0, 0, &err);
+        assert!(state.session_initialized, "true는 true 유지");
+
+        // false → 여전히 false
+        let mut state = base_state_for_error_tests();
+        state.statuses.insert(0, ChunkTranslationStatus::InProgress);
+        apply_error_to_state(&mut state, 0, 0, &err);
+        assert!(!state.session_initialized, "false는 false 유지");
+    }
+
+    #[test]
+    fn test_apply_error_retry_exhaustion() {
+        let mut state = base_state_for_error_tests();
+        state.statuses.insert(0, ChunkTranslationStatus::InProgress);
+        let err = AppError::Translation("generic".into());
+
+        let transition = apply_error_to_state(&mut state, 0, MAX_RETRIES - 1, &err);
+        assert!(!transition.retryable, "MAX_RETRIES 도달 시 retryable=false");
+        assert_eq!(
+            state.statuses[&0],
+            ChunkTranslationStatus::Error(MAX_RETRIES)
+        );
+    }
+
+    // ── handle_error 래퍼는 emit만 추가 — emit 경로는 E2E로 검증.
+    //     아래 두 "기존 호환" 테스트는 apply_error_to_state가 동일 결과임을 확인.
+
     #[tokio::test]
-    async fn test_handle_error_session_conflict_disables_reuse() {
+    async fn test_handle_error_session_conflict_disables_reuse_via_manager() {
         let mgr = BufferManager::new();
         mgr.init("vid1".into(), make_chunks(3), None, vec![], None)
             .await;
-
-        // 첫 청크가 InProgress 상태라고 가정
         {
             let mut lock = mgr.state.lock().await;
             let state = lock.as_mut().unwrap();
@@ -906,38 +1042,26 @@ mod tests {
                 .into(),
         );
 
-        // AppHandle 없이 상태만 검증하기 위해 handle_error 내부 로직을 수동 시뮬레이트.
-        // (handle_error는 app.emit을 호출하지만 state 변이만 여기서 검증)
+        // apply_error_to_state를 lock 안에서 직접 호출 (handle_error emit 부분은 스킵)
         {
             let mut lock = mgr.state.lock().await;
             let state = lock.as_mut().unwrap();
-            state.statuses.insert(0, ChunkTranslationStatus::Error(1));
-            state.in_progress = state.in_progress.saturating_sub(1);
-            let error_kind = classify_error(&err);
-            if error_kind == "session_conflict" {
-                state.session_reuse_disabled = true;
-            }
-            // session_initialized는 handle_error에서 변경하지 않음 — handle_completion 전용
+            apply_error_to_state(state, 0, 0, &err);
         }
 
         let lock = mgr.state.lock().await;
         let state = lock.as_ref().unwrap();
-        assert!(state.session_reuse_disabled, "충돌 감지 후 재사용 비활성");
-        assert!(
-            !state.session_initialized,
-            "handle_error는 session_initialized를 변경하지 않음 — \
-             네트워크/CLI 실패로 세션 미생성인 경우 resume 시 영구 실패 방지"
-        );
+        assert!(state.session_reuse_disabled);
+        assert!(!state.session_initialized);
         assert_eq!(state.in_progress, 0);
         assert_eq!(state.statuses[&0], ChunkTranslationStatus::Error(1));
     }
 
     #[tokio::test]
-    async fn test_handle_error_generic_keeps_session_reuse() {
+    async fn test_handle_error_generic_keeps_session_reuse_via_manager() {
         let mgr = BufferManager::new();
         mgr.init("vid1".into(), make_chunks(3), None, vec![], None)
             .await;
-
         {
             let mut lock = mgr.state.lock().await;
             let state = lock.as_mut().unwrap();
@@ -946,25 +1070,15 @@ mod tests {
         }
 
         let err = AppError::Translation("JSONL 파싱 실패".into());
-
         {
             let mut lock = mgr.state.lock().await;
             let state = lock.as_mut().unwrap();
-            state.statuses.insert(0, ChunkTranslationStatus::Error(1));
-            state.in_progress = state.in_progress.saturating_sub(1);
-            let error_kind = classify_error(&err);
-            if error_kind == "session_conflict" {
-                state.session_reuse_disabled = true;
-            }
-            // session_initialized는 변경하지 않음
+            apply_error_to_state(state, 0, 0, &err);
         }
 
         let lock = mgr.state.lock().await;
         let state = lock.as_ref().unwrap();
-        assert!(
-            !state.session_reuse_disabled,
-            "일반 에러는 세션 재사용 유지"
-        );
+        assert!(!state.session_reuse_disabled);
         assert!(
             !state.session_initialized,
             "handle_error는 session_initialized를 변경하지 않음"

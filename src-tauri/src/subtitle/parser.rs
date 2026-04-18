@@ -160,12 +160,19 @@ pub fn merge_into_sentences(lines: Vec<SubtitleLine>) -> Vec<SubtitleLine> {
         let mut ended_on_terminator = ends_with_sentence_terminator(&lines[i].text);
 
         while end_idx + 1 < lines.len() {
-            if ended_on_terminator {
-                break;
-            }
-
-            let cur = &lines[end_idx];
             let next = &lines[end_idx + 1];
+            let cur = &lines[end_idx];
+
+            // 이미 문장 종결로 끝났으면 보통 중단. 단, 현재 라인이 `.`으로 끝나고
+            // 다음 라인이 소문자로 시작하면 약어 뒤의 이어지는 문장일 가능성
+            // (`"Google Inc."` + `"in Mountain View."` 등)이 있어 한 번 더 확장 허용.
+            // `!`/`?`/`…`/CJK 부호(`。`/`！`/`？`)는 명확한 종결이므로 lookahead 하지 않음.
+            if ended_on_terminator {
+                let ends_with_dot = cur.text.trim_end().ends_with('.');
+                if !(ends_with_dot && next_line_starts_lowercase(next)) {
+                    break;
+                }
+            }
             let gap = next.start - cur.end;
             let merged_duration = next.end - start_time;
             let merged_chars = acc_chars + 1 + next.text.chars().count();
@@ -210,6 +217,18 @@ pub fn merge_into_sentences(lines: Vec<SubtitleLine>) -> Vec<SubtitleLine> {
     result
 }
 
+/// 다음 라인이 ASCII 소문자로 시작하는지. 약어 continuation 감지용.
+/// 예: `"Google Inc."` 다음에 `"in Mountain View."`가 오면 `in`의 `i`가 소문자 →
+/// 실제로는 한 문장이 이어지는 것이므로 merge 계속.
+fn next_line_starts_lowercase(next: &SubtitleLine) -> bool {
+    next.text
+        .trim_start()
+        .chars()
+        .next()
+        .map(|c| c.is_lowercase())
+        .unwrap_or(false)
+}
+
 fn ends_with_sentence_terminator(text: &str) -> bool {
     let trimmed = text.trim_end();
     match trimmed.chars().last() {
@@ -226,13 +245,35 @@ fn ends_with_sentence_terminator(text: &str) -> bool {
     }
 }
 
+/// 자주 쓰이는 영문 약어 목록. 소문자 기준.
+///
+/// `.`으로 끝나지만 **다음에 대문자가 와도** 문장 종결이 아닌 케이스를 잡기 위함.
+/// 예: `"Mr. Smith"`, `"Google Inc. launched"` 등.
+///
+/// 내부에 `.`이 있는 `a.m.`/`p.m.`/`e.g.`/`i.e.`는 `is_period_sentence_terminator`의
+/// "공백 없음" 규칙과 다음 문자 소문자 규칙이 이미 커버하므로 여기에 추가하지 않는다
+/// (추가하면 `"p.m. 100"`처럼 숫자로 이어지는 정상적인 문장 분리를 막게 됨).
+const ABBREVIATIONS: &[&str] = &[
+    // 호칭
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", // 회사/법인
+    "inc", "ltd", "co", "corp", "llc", // 일반
+    "etc", "vs", "approx", "ca",
+];
+
 /// `text`에서 `period_after` 위치 직전의 `.`이 문장 종결인지 판정.
 ///
 /// 규칙:
 /// - `.` 바로 뒤에 공백이 없으면 종결 아님 (약어/버전번호/URL 등)
+/// - `.` 직전 단어가 `ABBREVIATIONS`에 있으면 종결 아님 (Mr., Inc., e.g. 등)
 /// - `.` 뒤 공백 이후 첫 문자가 대문자/숫자/인용부호류/EOS이면 종결
 /// - 공백 이후 첫 문자가 소문자면 종결 아님 (Mr. smith, a.m. officially 등)
 fn is_period_sentence_terminator(text: &str, period_after: usize) -> bool {
+    // 먼저 `.` 직전 단어가 알려진 약어인지 확인 (대문자 시작이 와도 종결 아님).
+    // "Google Inc. launched it." 같은 케이스를 잡는다.
+    if preceding_word_is_abbreviation(text, period_after - 1) {
+        return false;
+    }
+
     if period_after >= text.len() {
         return true;
     }
@@ -260,6 +301,30 @@ fn is_period_sentence_terminator(text: &str, period_after: usize) -> bool {
         // "Mr. smith"의 s 같은 Latin 소문자일 때만 종결이 아님.
         Some(ch) => !ch.is_lowercase(),
     }
+}
+
+/// `text`에서 `period_byte` 위치의 `.` 직전 단어가 `ABBREVIATIONS`에 있는지.
+///
+/// 단어는 공백(또는 추가 `.`)으로 구분된 마지막 영문 토큰을 본다. 대소문자 무관.
+fn preceding_word_is_abbreviation(text: &str, period_byte: usize) -> bool {
+    if period_byte == 0 {
+        return false;
+    }
+    let before = &text[..period_byte];
+    // 역방향으로 영문 단어 추출 (ASCII alphabetic + 내부 period 허용 아님)
+    let last_word: String = before
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if last_word.is_empty() {
+        return false;
+    }
+    let lowered = last_word.to_lowercase();
+    ABBREVIATIONS.iter().any(|&a| a == lowered)
 }
 
 /// 기본 HTML entity 디코딩
@@ -622,6 +687,62 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].text, "At 3 p.m.");
         assert_eq!(result[1].text, "100 people came.");
+    }
+
+    #[test]
+    fn test_split_preserves_inc_at_end_of_sentence() {
+        // "Google Inc. launched it." — Inc. 약어라 문장 경계 아님 → 한 덩어리
+        let input = vec![line("Google Inc. launched it.", 0.0, 5.0)];
+        let result = split_lines_on_sentence_boundaries(input);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "Google Inc. launched it.");
+    }
+
+    #[test]
+    fn test_split_preserves_mr_smith_even_with_uppercase_next() {
+        // "Mr. Smith" — Mr. 약어라 대문자 뒤에 와도 종결 아님
+        let input = vec![line("Mr. Smith went home.", 0.0, 5.0)];
+        let result = split_lines_on_sentence_boundaries(input);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_split_preserves_vs_abbreviation() {
+        let input = vec![line("React vs. Vue is a hot topic.", 0.0, 5.0)];
+        let result = split_lines_on_sentence_boundaries(input);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_continues_across_abbreviation_boundary() {
+        // 자동 자막이 약어 뒤에서 라인을 끊은 경우: 다음 라인이 소문자로 시작하면 합침
+        let lines = vec![
+            line("She works at Google Inc.", 0.0, 3.0),
+            line("in Mountain View.", 3.0, 5.0),
+        ];
+        let result = merge_into_sentences(lines);
+        assert_eq!(result.len(), 1, "약어 뒤 소문자 시작 라인은 merge되어야 함");
+        assert_eq!(result[0].text, "She works at Google Inc. in Mountain View.");
+    }
+
+    #[test]
+    fn test_merge_still_splits_at_true_sentence_boundary() {
+        // 종결 후 다음 라인이 대문자로 시작 = 진짜 문장 전환 → 분리 유지
+        let lines = vec![
+            line("I love pizza.", 0.0, 2.0),
+            line("She prefers pasta.", 2.0, 4.0),
+        ];
+        let result = merge_into_sentences(lines);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_preceding_word_is_abbreviation_basic() {
+        assert!(preceding_word_is_abbreviation("Google Inc.", 10));
+        assert!(preceding_word_is_abbreviation("Mr.", 2));
+        assert!(preceding_word_is_abbreviation("React vs.", 8));
+        assert!(!preceding_word_is_abbreviation("hello.", 5));
+        assert!(!preceding_word_is_abbreviation("test world.", 10));
     }
 
     #[test]
