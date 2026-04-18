@@ -30,9 +30,9 @@
   --radius: 0.625rem;
 
   /* 자막 오버레이 (Phase 2에서 사용) */
-  --subtitle-bg: rgba(0, 0, 0, 0.75);
+  --subtitle-bg: rgba(0, 0, 0, 0.82);
   --subtitle-text: oklch(0.98 0 0);
-  --subtitle-original: oklch(0.556 0 0);
+  --subtitle-original: oklch(0.72 0 0);
   --subtitle-border: oklch(1 0 0 / 6%);
 
   /* 번역 상태 */
@@ -48,9 +48,9 @@
   /* 타이포그래피 */
   --font-family: "Pretendard Variable", "Pretendard", "Inter", -apple-system,
     sans-serif;
-  --subtitle-size: 1.25rem;
-  --subtitle-size-lg: 1.5rem;
-  --subtitle-original-size: 0.875rem;
+  --subtitle-size: 1.5rem;
+  --subtitle-size-lg: 1.75rem;
+  --subtitle-original-size: 0.72em;
   --leading-subtitle: 1.6;
   --leading-ui: 1.5;
 }

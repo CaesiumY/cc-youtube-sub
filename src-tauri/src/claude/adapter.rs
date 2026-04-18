@@ -42,6 +42,31 @@ fn build_claude_command(args: &[&str]) -> Command {
 /// 허용된 모델 alias 목록 — IPC 경계에서의 입력 검증용
 const ALLOWED_MODELS: &[&str] = &["haiku", "sonnet"];
 
+/// `ClaudeAdapter::execute` 호출 파라미터.
+///
+/// 인자가 많아 (`prompt`, `timeout_secs`, `model`, `session_id`, `is_first_in_session`)
+/// positional 호출이 혼란스럽고 clippy `too_many_arguments` 경고 위험이 있으므로 struct로
+/// 묶는다. 호출측은 struct literal로 의미를 명시:
+///
+/// ```rust,ignore
+/// ClaudeAdapter::execute(ExecuteParams {
+///     prompt: &prompt,
+///     timeout_secs: 120,
+///     model: Some("haiku"),
+///     session_id: Some(&uuid),
+///     is_first_in_session: true,
+/// }).await
+/// ```
+pub struct ExecuteParams<'a> {
+    pub prompt: &'a str,
+    pub timeout_secs: u64,
+    pub model: Option<&'a str>,
+    /// `Some(uuid)`이면 세션 재사용. `None`이면 독립 실행 (세션 플래그 미사용).
+    pub session_id: Option<&'a str>,
+    /// `true`: 새 세션 생성 또는 독립 실행 (풀 프롬프트). `false`: 기존 세션 resume.
+    pub is_first_in_session: bool,
+}
+
 /// Claude CLI 환경 검증 및 실행을 담당하는 어댑터
 ///
 /// Paperclip의 ServerAdapter 패턴을 참조:
@@ -102,12 +127,21 @@ impl ClaudeAdapter {
     /// - `--print -`: stdin에서 프롬프트를 읽어 단일 응답 출력
     /// - `--output-format stream-json`: JSONL 스트림 형식 출력
     /// - `--model`: 사용할 모델 alias (haiku, sonnet)
+    /// - `session_id` + `is_first_in_session`: 같은 영상의 청크들이 동일 Claude 세션을
+    ///   재사용하여 맥락 연속성 확보.
+    ///   - `is_first_in_session = true` → `--session-id <uuid>`로 세션 생성
+    ///   - `is_first_in_session = false` → `--resume <uuid> --fork-session`으로
+    ///     부모 세션의 맥락은 계승하면서 fork된 세션에 기록 (동시 호출 충돌 회피)
     /// - `CLAUDECODE` 환경변수 제거: Paperclip 패턴 (재귀 방지)
-    pub async fn execute(
-        prompt: &str,
-        timeout_secs: u64,
-        model: Option<&str>,
-    ) -> Result<String, AppError> {
+    pub async fn execute(params: ExecuteParams<'_>) -> Result<String, AppError> {
+        let ExecuteParams {
+            prompt,
+            timeout_secs,
+            model,
+            session_id,
+            is_first_in_session,
+        } = params;
+
         if let Some(m) = model {
             if !ALLOWED_MODELS.contains(&m) {
                 return Err(AppError::Process(format!("지원하지 않는 모델: {}", m)));
@@ -123,6 +157,17 @@ impl ClaudeAdapter {
             "stream-json",
             "--verbose",
         ];
+        if let Some(uuid) = session_id {
+            if is_first_in_session {
+                args.push("--session-id");
+                args.push(uuid);
+            } else {
+                args.push("--resume");
+                args.push(uuid);
+                // fork-session: 부모 세션 맥락은 계승, 새 분기에 기록 → 동시 실행 안전
+                args.push("--fork-session");
+            }
+        }
         if let Some(m) = model {
             args.push("--model");
             args.push(m);

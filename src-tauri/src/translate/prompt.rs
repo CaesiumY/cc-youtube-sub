@@ -3,53 +3,65 @@ use crate::translate::VideoInfo;
 
 /// 번역 프롬프트를 구성
 ///
-/// 구조:
-/// 1. 시스템 지시 (번역 규칙)
-/// 2. [VIDEO_DESCRIPTION] — 첫 청크에만 포함
-/// 3. [CONTEXT_FROM_PREVIOUS_CHUNK] — 2번째 청크부터
-/// 4. [CURRENT_CHUNK_SUBTITLES] — 현재 청크의 자막
-/// 5. [TRANSLATION_INSTRUCTION] — JSON 배열 반환 지시
+/// 두 가지 모드:
+/// - `is_first_in_session == true` (세션 생성 / 독립 실행): 시스템 지시 + 영상 설명 +
+///   이전 청크 맥락 + 현재 청크 + 번역 지시를 모두 포함하는 풀 프롬프트.
+/// - `is_first_in_session == false` (세션 이어감): Claude CLI 세션이 시스템 지시와
+///   영상 설명을 이미 기억하므로 현재 청크와 간결한 지시만 전송.
+///
+/// `adapter::ClaudeAdapter::execute`의 동명 인자와 의미·부호 일치 — 반대 부호 boolean
+/// 때문에 생기던 혼란을 제거.
 pub fn build_prompt(
     chunk: &SubtitleChunk,
     video_info: Option<&VideoInfo>,
     previous_context: Option<&[SubtitleLine]>,
+    is_first_in_session: bool,
 ) -> String {
     let mut parts = Vec::new();
 
-    // 시스템 지시
-    parts.push(
-        "You are a professional subtitle translator. \
-         Translate the following English subtitles into natural, fluent Korean. \
-         Preserve the original meaning and tone. \
-         Keep technical terms in English when commonly used in Korean context."
-            .to_string(),
-    );
+    if is_first_in_session {
+        parts.push(
+            "You are a professional subtitle translator. \
+             Translate the following English subtitles into natural, fluent Korean. \
+             ALWAYS use Korean formal polite speech (합쇼체) — every sentence must end with \
+             endings like ~습니다, ~니다, ~입니다, ~죠, or polite question forms like ~습니까, ~나요. \
+             Never use plain form (~다, ~이다, ~해, ~한다) or casual speech (~야, ~어, ~지). \
+             Preserve the original meaning and nuance, but always keep the polite register \
+             regardless of the speaker's tone in the source. \
+             Keep technical terms in English when commonly used in Korean context."
+                .to_string(),
+        );
 
-    // 영상 설명 (첫 청크에만)
-    if let Some(info) = video_info {
-        parts.push(format!(
-            "[VIDEO_DESCRIPTION]\nTitle: {}\nDescription: {}",
-            info.title, info.description
-        ));
-    }
-
-    // 이전 청크 맥락 (2번째 청크부터)
-    if let Some(context) = previous_context {
-        if !context.is_empty() {
-            let context_text: String = context
-                .iter()
-                .map(|l| format!("[{:.1}s] {}", l.start, l.text))
-                .collect::<Vec<_>>()
-                .join("\n");
+        if let Some(info) = video_info {
             parts.push(format!(
-                "[CONTEXT_FROM_PREVIOUS_CHUNK]\n\
-                 The following are the last few lines from the previous chunk for context:\n{}",
-                context_text
+                "[VIDEO_DESCRIPTION]\nTitle: {}\nDescription: {}",
+                info.title, info.description
             ));
         }
+
+        if let Some(context) = previous_context {
+            if !context.is_empty() {
+                let context_text: String = context
+                    .iter()
+                    .map(|l| format!("[{:.1}s] {}", l.start, l.text))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                parts.push(format!(
+                    "[CONTEXT_FROM_PREVIOUS_CHUNK]\n\
+                     The following are the last few lines from the previous chunk for context:\n{}",
+                    context_text
+                ));
+            }
+        }
+    } else {
+        parts.push(
+            "Continue translating the next chunk. \
+             Maintain consistency with previous chunks' terminology. \
+             Keep using Korean formal polite speech (합쇼체, ~습니다/~니다)."
+                .to_string(),
+        );
     }
 
-    // 현재 청크 자막
     let subtitle_text: String = chunk
         .lines
         .iter()
@@ -65,18 +77,26 @@ pub fn build_prompt(
         subtitle_text
     ));
 
-    // 번역 지시
-    parts.push(
-        "[TRANSLATION_INSTRUCTION]\n\
-         Translate each subtitle line and respond with a JSON array. \
-         Each element must have these exact fields:\n\
-         - \"original\": the original English text\n\
-         - \"translated\": the Korean translation\n\
-         - \"start\": start time in seconds (number)\n\
-         - \"end\": end time in seconds (number)\n\n\
-         Respond ONLY with the JSON array, no other text."
-            .to_string(),
-    );
+    if is_first_in_session {
+        parts.push(
+            "[TRANSLATION_INSTRUCTION]\n\
+             Translate each subtitle line and respond with a JSON array. \
+             Each element must have these exact fields:\n\
+             - \"original\": the original English text\n\
+             - \"translated\": the Korean translation\n\
+             - \"start\": start time in seconds (number)\n\
+             - \"end\": end time in seconds (number)\n\n\
+             Respond ONLY with the JSON array, no other text."
+                .to_string(),
+        );
+    } else {
+        parts.push(
+            "[TRANSLATION_INSTRUCTION]\n\
+             Respond ONLY with a JSON array of objects with fields: \
+             \"original\", \"translated\", \"start\" (number), \"end\" (number)."
+                .to_string(),
+        );
+    }
 
     parts.join("\n\n")
 }
@@ -122,7 +142,7 @@ mod tests {
             title: "Test Video".into(),
             description: "A test".into(),
         };
-        let prompt = build_prompt(&chunk, Some(&info), None);
+        let prompt = build_prompt(&chunk, Some(&info), None, true);
 
         assert!(prompt.contains("[VIDEO_DESCRIPTION]"));
         assert!(prompt.contains("Test Video"));
@@ -140,7 +160,7 @@ mod tests {
             make_line("Previous line 1", 28.0, 30.0),
             make_line("Previous line 2", 30.0, 33.0),
         ];
-        let prompt = build_prompt(&chunk, None, Some(&context));
+        let prompt = build_prompt(&chunk, None, Some(&context), true);
 
         assert!(!prompt.contains("[VIDEO_DESCRIPTION]"));
         assert!(prompt.contains("[CONTEXT_FROM_PREVIOUS_CHUNK]"));
@@ -150,9 +170,26 @@ mod tests {
     }
 
     #[test]
+    fn test_session_continuation_omits_system_instruction() {
+        let chunk = make_chunk(3, vec![make_line("Another line", 60.0, 62.0)]);
+        let info = VideoInfo {
+            title: "T".into(),
+            description: "D".into(),
+        };
+        let prompt = build_prompt(&chunk, Some(&info), None, false);
+
+        assert!(!prompt.contains("professional subtitle translator"));
+        assert!(!prompt.contains("[VIDEO_DESCRIPTION]"));
+        assert!(!prompt.contains("[CONTEXT_FROM_PREVIOUS_CHUNK]"));
+        assert!(prompt.contains("Continue translating"));
+        assert!(prompt.contains("[CURRENT_CHUNK_SUBTITLES]"));
+        assert!(prompt.contains("JSON array"));
+    }
+
+    #[test]
     fn test_prompt_always_has_instructions() {
         let chunk = make_chunk(0, vec![make_line("test", 0.0, 1.0)]);
-        let prompt = build_prompt(&chunk, None, None);
+        let prompt = build_prompt(&chunk, None, None, true);
 
         assert!(prompt.contains("professional subtitle translator"));
         assert!(prompt.contains("JSON array"));
@@ -163,8 +200,7 @@ mod tests {
     #[test]
     fn test_time_format_in_subtitles() {
         let chunk = make_chunk(0, vec![make_line("test", 65.0, 67.5)]);
-        let prompt = build_prompt(&chunk, None, None);
-        // 65초 = 1:05.0
+        let prompt = build_prompt(&chunk, None, None, true);
         assert!(prompt.contains("[65.0-67.5s]"));
     }
 

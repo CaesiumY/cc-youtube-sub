@@ -13,7 +13,7 @@ export function YouTubePlayer({ videoId, playerRef }: YouTubePlayerProps) {
   const setCurrentTime = usePlayerStore((s) => s.setCurrentTime);
   const setPlayerState = usePlayerStore((s) => s.setPlayerState);
 
-  // 200ms 폴링으로 재생 시간 추적 (자막 동기화 정확도)
+  // 100ms 폴링으로 재생 시간 추적 (자막 매칭 지연을 최소화)
   const startPolling = useCallback(() => {
     if (intervalRef.current) return;
     intervalRef.current = setInterval(() => {
@@ -21,7 +21,7 @@ export function YouTubePlayer({ videoId, playerRef }: YouTubePlayerProps) {
       if (time !== undefined) {
         setCurrentTime(time);
       }
-    }, 200);
+    }, 100);
   }, [setCurrentTime]);
 
   const stopPolling = useCallback(() => {
