@@ -6,7 +6,7 @@ use tauri::Emitter;
 use tokio::sync::Mutex;
 
 use crate::cache::{compute_chunk_hash, TranslationCache};
-use crate::claude::adapter::ClaudeAdapter;
+use crate::claude::adapter::{ClaudeAdapter, ExecuteParams};
 use crate::error::AppError;
 use crate::subtitle::{SubtitleChunk, SubtitleLine};
 use crate::translate::jsonl_parser::extract_text_from_jsonl;
@@ -457,7 +457,15 @@ struct SpawnTask {
 
 // ── 헬퍼 함수 ───────────────────────────────────────
 
-/// 현재 재생 위치 기준으로 번역이 필요한 청크를 우선순위 순으로 반환
+/// 현재 재생 위치 기준으로 번역이 필요한 청크를 우선순위 순으로 반환.
+///
+/// 기준 청크 `current_idx`를 찾아 `[current_idx, current_idx + LOOK_AHEAD]` 범위에서
+/// Pending/재시도 가능한 Error 상태 청크를 수집.
+///
+/// **Edge case — 청크 사이 gap**: `current_position`이 어떤 청크에도 매칭되지 않으면
+/// (자막 없는 빈 구간, seek 직후 등) `current_idx = 0`으로 fallback. 영상 중반에
+/// gap이 생기면 처음부터 lookahead 수집하게 되지만, 실제 자막은 거의 연속이라
+/// 실무상 드물고 Pending/Error가 이미 처리된 앞 청크는 match 가지 않으므로 무해.
 fn get_priority_chunks(state: &BufferState) -> Vec<i32> {
     let current_idx = state
         .chunks
@@ -630,9 +638,15 @@ async fn translate_chunk_internal(
     claude_session_id: Option<&str>,
     is_first_in_session: bool,
 ) -> Result<Vec<TranslationEntry>, AppError> {
-    let prompt = build_prompt(chunk, video_info, previous_context, !is_first_in_session);
-    let raw_output =
-        ClaudeAdapter::execute(&prompt, 120, model, claude_session_id, is_first_in_session).await?;
+    let prompt = build_prompt(chunk, video_info, previous_context, is_first_in_session);
+    let raw_output = ClaudeAdapter::execute(ExecuteParams {
+        prompt: &prompt,
+        timeout_secs: 120,
+        model,
+        session_id: claude_session_id,
+        is_first_in_session,
+    })
+    .await?;
     let json_text = extract_text_from_jsonl(&raw_output)
         .map_err(|e| AppError::Translation(format!("JSONL 파싱 실패: {}", e)))?;
     validate_translation(&json_text)

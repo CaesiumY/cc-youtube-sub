@@ -4,18 +4,22 @@ use crate::translate::VideoInfo;
 /// 번역 프롬프트를 구성
 ///
 /// 두 가지 모드:
-/// - `is_session_continuation == false` (세션 생성): 시스템 지시 + 영상 설명 + 현재 청크 + 지시
-/// - `is_session_continuation == true` (세션 이어감): Claude CLI 세션이 시스템 지시와
-///   영상 설명을 이미 기억하므로 현재 청크와 간결한 지시만 전송
+/// - `is_first_in_session == true` (세션 생성 / 독립 실행): 시스템 지시 + 영상 설명 +
+///   이전 청크 맥락 + 현재 청크 + 번역 지시를 모두 포함하는 풀 프롬프트.
+/// - `is_first_in_session == false` (세션 이어감): Claude CLI 세션이 시스템 지시와
+///   영상 설명을 이미 기억하므로 현재 청크와 간결한 지시만 전송.
+///
+/// `adapter::ClaudeAdapter::execute`의 동명 인자와 의미·부호 일치 — 반대 부호 boolean
+/// 때문에 생기던 혼란을 제거.
 pub fn build_prompt(
     chunk: &SubtitleChunk,
     video_info: Option<&VideoInfo>,
     previous_context: Option<&[SubtitleLine]>,
-    is_session_continuation: bool,
+    is_first_in_session: bool,
 ) -> String {
     let mut parts = Vec::new();
 
-    if !is_session_continuation {
+    if is_first_in_session {
         parts.push(
             "You are a professional subtitle translator. \
              Translate the following English subtitles into natural, fluent Korean. \
@@ -73,14 +77,7 @@ pub fn build_prompt(
         subtitle_text
     ));
 
-    if is_session_continuation {
-        parts.push(
-            "[TRANSLATION_INSTRUCTION]\n\
-             Respond ONLY with a JSON array of objects with fields: \
-             \"original\", \"translated\", \"start\" (number), \"end\" (number)."
-                .to_string(),
-        );
-    } else {
+    if is_first_in_session {
         parts.push(
             "[TRANSLATION_INSTRUCTION]\n\
              Translate each subtitle line and respond with a JSON array. \
@@ -90,6 +87,13 @@ pub fn build_prompt(
              - \"start\": start time in seconds (number)\n\
              - \"end\": end time in seconds (number)\n\n\
              Respond ONLY with the JSON array, no other text."
+                .to_string(),
+        );
+    } else {
+        parts.push(
+            "[TRANSLATION_INSTRUCTION]\n\
+             Respond ONLY with a JSON array of objects with fields: \
+             \"original\", \"translated\", \"start\" (number), \"end\" (number)."
                 .to_string(),
         );
     }
@@ -138,7 +142,7 @@ mod tests {
             title: "Test Video".into(),
             description: "A test".into(),
         };
-        let prompt = build_prompt(&chunk, Some(&info), None, false);
+        let prompt = build_prompt(&chunk, Some(&info), None, true);
 
         assert!(prompt.contains("[VIDEO_DESCRIPTION]"));
         assert!(prompt.contains("Test Video"));
@@ -156,7 +160,7 @@ mod tests {
             make_line("Previous line 1", 28.0, 30.0),
             make_line("Previous line 2", 30.0, 33.0),
         ];
-        let prompt = build_prompt(&chunk, None, Some(&context), false);
+        let prompt = build_prompt(&chunk, None, Some(&context), true);
 
         assert!(!prompt.contains("[VIDEO_DESCRIPTION]"));
         assert!(prompt.contains("[CONTEXT_FROM_PREVIOUS_CHUNK]"));
@@ -172,7 +176,7 @@ mod tests {
             title: "T".into(),
             description: "D".into(),
         };
-        let prompt = build_prompt(&chunk, Some(&info), None, true);
+        let prompt = build_prompt(&chunk, Some(&info), None, false);
 
         assert!(!prompt.contains("professional subtitle translator"));
         assert!(!prompt.contains("[VIDEO_DESCRIPTION]"));
@@ -185,7 +189,7 @@ mod tests {
     #[test]
     fn test_prompt_always_has_instructions() {
         let chunk = make_chunk(0, vec![make_line("test", 0.0, 1.0)]);
-        let prompt = build_prompt(&chunk, None, None, false);
+        let prompt = build_prompt(&chunk, None, None, true);
 
         assert!(prompt.contains("professional subtitle translator"));
         assert!(prompt.contains("JSON array"));
@@ -196,7 +200,7 @@ mod tests {
     #[test]
     fn test_time_format_in_subtitles() {
         let chunk = make_chunk(0, vec![make_line("test", 65.0, 67.5)]);
-        let prompt = build_prompt(&chunk, None, None, false);
+        let prompt = build_prompt(&chunk, None, None, true);
         assert!(prompt.contains("[65.0-67.5s]"));
     }
 

@@ -332,9 +332,12 @@ async fn fetch_via_android_innertube(
     Ok((lines, is_auto))
 }
 
-/// timedtext URL에서 `fmt=xxx` 쿼리 파라미터를 제거한다.
-/// ANDROID 클라이언트가 반환하는 URL에 붙는 `fmt=srv3`가 빈 응답을 유발하는
-/// 케이스가 있어 기본 포맷으로 요청하기 위함.
+/// YouTube **timedtext URL 전용**: 쿼리 파라미터의 `fmt=xxx`를 제거한다.
+///
+/// ANDROID InnerTube 클라이언트가 반환하는 timedtext URL에 종종 `fmt=srv3`가 붙는데,
+/// 이 포맷이 빈 응답을 유발하는 케이스가 있어 기본 XML(srv1) 포맷으로 강제한다.
+/// 이 함수는 timedtext URL(`youtube.com/api/timedtext?...`) 외의 범용 URL에서는
+/// 의도치 않은 쿼리 조작이 일어날 수 있으므로 호출 맥락에 주의.
 fn strip_fmt_param(url: &str) -> String {
     // Fast path: fmt= 파라미터가 없으면 Vec 할당 없이 원본 그대로 반환.
     // YouTube timedtext URL은 항상 소문자 `fmt=` 를 쓰므로 대소문자 구분 불필요.

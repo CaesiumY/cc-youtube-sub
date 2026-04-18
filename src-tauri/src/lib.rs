@@ -52,16 +52,22 @@ async fn translate_chunk(
     previous_context: Option<Vec<SubtitleLine>>,
     model: Option<String>,
 ) -> Result<Vec<TranslationEntry>, AppError> {
+    // 세션 재사용 없이 독립 실행 = 첫 호출 모드 (시스템 지시 + 영상 설명 포함).
     let prompt = build_prompt(
         &chunk,
         video_info.as_ref(),
         previous_context.as_deref(),
-        false,
+        true,
     );
 
-    let raw_output =
-        claude::adapter::ClaudeAdapter::execute(&prompt, 120, model.as_deref(), None, false)
-            .await?;
+    let raw_output = claude::adapter::ClaudeAdapter::execute(claude::adapter::ExecuteParams {
+        prompt: &prompt,
+        timeout_secs: 120,
+        model: model.as_deref(),
+        session_id: None,
+        is_first_in_session: true,
+    })
+    .await?;
 
     let json_text = extract_text_from_jsonl(&raw_output)
         .map_err(|e| AppError::Translation(format!("JSONL 파싱 실패: {}", e)))?;

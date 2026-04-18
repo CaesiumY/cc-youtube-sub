@@ -80,7 +80,7 @@ async fn main() {
             return;
         }
     };
-    let prompt = build_prompt(first_chunk, video_info.as_ref(), None, false);
+    let prompt = build_prompt(first_chunk, video_info.as_ref(), None, true);
     println!("  ✅ 프롬프트 길이: {} chars", prompt.len());
     println!("  --- 프롬프트 미리보기 (처음 500자) ---");
     println!("{}", &prompt[..prompt.len().min(500)]);
@@ -99,7 +99,13 @@ async fn main() {
     // Step 6: Claude 번역 실행
     println!("\n[6/6] Claude CLI 번역 실행 (최대 120초)...");
     match youtube_subtitle_lib::claude::adapter::ClaudeAdapter::execute(
-        &prompt, 120, None, None, false,
+        youtube_subtitle_lib::claude::adapter::ExecuteParams {
+            prompt: &prompt,
+            timeout_secs: 120,
+            model: None,
+            session_id: None,
+            is_first_in_session: true,
+        },
     )
     .await
     {

@@ -31,7 +31,7 @@ mod integration_tests {
     //! 실행: `cargo test --lib -- --ignored --nocapture`
 
     use super::*;
-    use crate::claude::adapter::ClaudeAdapter;
+    use crate::claude::adapter::{ClaudeAdapter, ExecuteParams};
     use crate::subtitle::chunk::split_into_chunks;
     use crate::subtitle::fetch::fetch_subtitles;
     use crate::subtitle::{SubtitleChunk, SubtitleLine};
@@ -47,10 +47,17 @@ mod integration_tests {
         previous_context: Option<&[SubtitleLine]>,
         model: Option<&str>,
     ) -> Vec<TranslationEntry> {
-        let prompt = build_prompt(chunk, video_info, previous_context, false);
-        let raw = ClaudeAdapter::execute(&prompt, 120, model, None, false)
-            .await
-            .expect("Claude subprocess 실행 실패");
+        // 통합 테스트 파이프라인은 세션 없이 독립 실행 = 첫 호출 모드
+        let prompt = build_prompt(chunk, video_info, previous_context, true);
+        let raw = ClaudeAdapter::execute(ExecuteParams {
+            prompt: &prompt,
+            timeout_secs: 120,
+            model,
+            session_id: None,
+            is_first_in_session: true,
+        })
+        .await
+        .expect("Claude subprocess 실행 실패");
         let json_text = extract_text_from_jsonl(&raw).expect("JSONL 파싱 실패");
         validate_translation(&json_text).expect("번역 결과 검증 실패")
     }
