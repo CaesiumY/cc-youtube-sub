@@ -223,7 +223,7 @@ impl BufferManager {
                     None
                 };
                 let prev_context = if is_first_in_session {
-                    get_previous_context(&state.chunks, idx)
+                    get_previous_context(&state.chunks, idx, state.session_reuse_disabled)
                 } else {
                     None
                 };
@@ -484,15 +484,32 @@ fn get_priority_chunks(state: &BufferState) -> Vec<i32> {
     result
 }
 
-/// 이전 청크의 마지막 8줄을 context로 추출 (세션 첫 호출에만 사용)
-fn get_previous_context(chunks: &[SubtitleChunk], current_index: i32) -> Option<Vec<SubtitleLine>> {
+/// 이전 청크의 마지막 몇 줄을 context로 추출 (세션 첫 호출 / 독립 실행 모드에 사용).
+///
+/// - 세션 재사용 모드: 첫 호출에만 전달되므로 8줄로 충분 (이후는 세션이 맥락 기억)
+/// - 세션 재사용 비활성(`session_reuse_disabled`) 폴백 모드: 매 청크가 독립 실행되므로
+///   맥락이 끊기지 않도록 더 많은 줄(15줄)을 전달해 번역 일관성 확보
+fn get_previous_context(
+    chunks: &[SubtitleChunk],
+    current_index: i32,
+    session_reuse_disabled: bool,
+) -> Option<Vec<SubtitleLine>> {
     if current_index == 0 {
         return None;
     }
+    let take_count = if session_reuse_disabled { 15 } else { 8 };
     chunks
         .iter()
         .find(|c| c.index == current_index - 1)
-        .map(|c| c.lines.iter().rev().take(8).rev().cloned().collect())
+        .map(|c| {
+            c.lines
+                .iter()
+                .rev()
+                .take(take_count)
+                .rev()
+                .cloned()
+                .collect()
+        })
 }
 
 /// `apply_error_to_state`의 결과 — `handle_error`가 이벤트 emit에 사용.
@@ -550,27 +567,39 @@ fn apply_error_to_state(
     }
 }
 
-/// 에러 메시지에서 종류를 분류 (프론트엔드 UI 분기 + BufferManager 폴백 로직에 사용)
+/// 에러 메시지에서 종류를 분류 (프론트엔드 UI 분기 + BufferManager 폴백 로직에 사용).
+///
+/// 텍스트 휴리스틱이므로 Claude CLI 출력 변경에 취약함을 인지. 가능한 한 구체적
+/// 패턴을 매칭해 오분류를 줄인다. 특히 `"exceeded"` 단독 매칭은 `context length
+/// exceeded`, `token limit exceeded` 등 rate limit이 아닌 케이스까지 잡으므로 사용 금지.
 fn classify_error(error: &AppError) -> String {
     let msg = error.to_string().to_lowercase();
     if msg.contains("session id") && msg.contains("already in use") {
         // Claude CLI: `Error: Session ID {uuid} is already in use.`
-        "session_conflict".into()
-    } else if msg.contains("rate limit") || msg.contains("exceeded") {
-        "rate_limit".into()
-    } else if msg.contains("timeout") || msg.contains("타임아웃") {
-        "timeout".into()
-    } else if msg.contains("claude") && (msg.contains("찾을 수 없") || msg.contains("not found"))
+        return "session_conflict".into();
+    }
+    // rate limit: Claude/Anthropic 주요 표현만 구체 매칭.
+    // `"exceeded"` 단독은 context length 등과 충돌하므로 `"rate limit"`/`"quota"`/
+    // `"usage limit"`/Claude의 `"5-hour"` 정책 문구에 국한.
+    if msg.contains("rate limit")
+        || msg.contains("quota exceeded")
+        || msg.contains("usage limit")
+        || msg.contains("5-hour")
     {
-        "cli_not_found".into()
-    } else {
-        match error {
-            AppError::CaptionFetch(_) => "caption_fetch".into(),
-            AppError::Translation(_) => "translation".into(),
-            AppError::Database(_) => "database".into(),
-            AppError::EnvironmentCheck(_) => "environment".into(),
-            AppError::Process(_) => "process".into(),
-        }
+        return "rate_limit".into();
+    }
+    if msg.contains("timeout") || msg.contains("타임아웃") {
+        return "timeout".into();
+    }
+    if msg.contains("claude") && (msg.contains("찾을 수 없") || msg.contains("not found")) {
+        return "cli_not_found".into();
+    }
+    match error {
+        AppError::CaptionFetch(_) => "caption_fetch".into(),
+        AppError::Translation(_) => "translation".into(),
+        AppError::Database(_) => "database".into(),
+        AppError::EnvironmentCheck(_) => "environment".into(),
+        AppError::Process(_) => "process".into(),
     }
 }
 
@@ -787,13 +816,39 @@ mod tests {
     #[test]
     fn test_previous_context_first_chunk() {
         let chunks = make_chunks(3);
-        assert!(get_previous_context(&chunks, 0).is_none());
+        assert!(get_previous_context(&chunks, 0, false).is_none());
+        assert!(get_previous_context(&chunks, 0, true).is_none());
+    }
+
+    #[test]
+    fn test_previous_context_fallback_takes_more_lines() {
+        // 청크당 20줄을 가진 fixture
+        let chunks: Vec<SubtitleChunk> = (0..2)
+            .map(|i| SubtitleChunk {
+                index: i,
+                start_time: i as f64 * 20.0,
+                end_time: (i + 1) as f64 * 20.0,
+                lines: (0..20)
+                    .map(|j| SubtitleLine {
+                        text: format!("c{i}l{j}"),
+                        start: i as f64 * 20.0 + j as f64,
+                        end: i as f64 * 20.0 + j as f64 + 1.0,
+                    })
+                    .collect(),
+            })
+            .collect();
+        // 세션 모드: 8줄
+        let normal = get_previous_context(&chunks, 1, false).unwrap();
+        assert_eq!(normal.len(), 8);
+        // 폴백 모드: 15줄
+        let fallback = get_previous_context(&chunks, 1, true).unwrap();
+        assert_eq!(fallback.len(), 15);
     }
 
     #[test]
     fn test_previous_context_second_chunk() {
         let chunks = make_chunks(3);
-        let ctx = get_previous_context(&chunks, 1);
+        let ctx = get_previous_context(&chunks, 1, false);
         assert!(ctx.is_some());
         assert_eq!(ctx.unwrap().len(), 1);
     }
@@ -802,6 +857,26 @@ mod tests {
     fn test_classify_error_rate_limit() {
         let err = AppError::Process("Claude rate limit exceeded".into());
         assert_eq!(classify_error(&err), "rate_limit");
+    }
+
+    #[test]
+    fn test_classify_error_rate_limit_variants() {
+        // quota / usage limit / 5-hour 변형 모두 rate_limit으로 잡혀야 함
+        let err1 = AppError::Process("quota exceeded for this model".into());
+        assert_eq!(classify_error(&err1), "rate_limit");
+        let err2 = AppError::Process("monthly usage limit reached".into());
+        assert_eq!(classify_error(&err2), "rate_limit");
+        let err3 = AppError::Process("5-hour limit hit".into());
+        assert_eq!(classify_error(&err3), "rate_limit");
+    }
+
+    #[test]
+    fn test_classify_error_context_length_not_rate_limit() {
+        // "exceeded"가 들어가지만 rate_limit은 아닌 케이스 — 오분류 없어야 함
+        let err = AppError::Process("context length exceeded".into());
+        assert_ne!(classify_error(&err), "rate_limit");
+        let err2 = AppError::Process("maximum token limit exceeded".into());
+        assert_ne!(classify_error(&err2), "rate_limit");
     }
 
     #[test]

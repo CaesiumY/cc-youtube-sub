@@ -14,17 +14,18 @@ const SCALE_MIN = 0.9;
 const SCALE_MAX = 1.6;
 
 /**
- * 자막 매칭 시점을 재생 시간보다 살짝 앞당기는 offset (초).
+ * 자막 매칭에서 등장 시점만 앞당기는 offset (초).
  *
- * 이유:
- * - YouTube 자동 자막(ASR)의 `start` 시점은 보통 실제 발음보다 0.3~0.6초 뒤에 찍힘
- *   (YouTube가 발음 완료 무렵에 snippet 경계 설정하는 구조적 특성)
- * - 학습 자막 특성상 "살짝 먼저 보이는" 게 오히려 읽고 듣기 편함
+ * - `leadSec`: 자막 start 시점을 앞당겨 **미리 등장**하게 함. ASR start가 실제 발음보다
+ *   뒤에 찍히는 구조적 지연 상쇄용.
+ * - `lingerSec` (0): 자막은 **raw end 순간에 사라짐**. 즉 발음이 끝나면 자막도 사라짐.
+ *   학습 용도에는 이 조합이 자연스러움 (다음 자막이 뜰 때 자연스럽게 교체).
  *
- * 너무 크면 다음 자막이 너무 일찍 뜨고, 너무 작으면 체감상 늦음.
- * 어색하면 값만 조정.
+ * 이전 구현은 `currentTime + 0.5`로 시간 자체를 앞당겼는데, 그러면 퇴장도 같이
+ * 앞당겨져 발음이 끝나기 전에 자막이 사라지는 문제가 있었다.
  */
 const SUBTITLE_LEAD_SEC = 0.5;
+const SUBTITLE_LINGER_SEC = 0;
 
 function computeScale(width: number): number {
   if (width <= 0) return 1;
@@ -64,7 +65,11 @@ export function SubtitleOverlay() {
   }, []);
 
   const currentEntry = useMemo(
-    () => findSubtitleAt(translations, currentTime + SUBTITLE_LEAD_SEC),
+    () =>
+      findSubtitleAt(translations, currentTime, {
+        leadSec: SUBTITLE_LEAD_SEC,
+        lingerSec: SUBTITLE_LINGER_SEC,
+      }),
     [translations, currentTime],
   );
 

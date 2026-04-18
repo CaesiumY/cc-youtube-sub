@@ -99,7 +99,19 @@ fn split_single_line_on_sentence_boundaries(line: SubtitleLine) -> Vec<SubtitleL
         return vec![line];
     }
 
+    // 문자 수 비례 분배 시 매우 짧은 part(`"A."` 2자)가 중간에 끼면 duration이
+    // 거의 0으로 수축되어 자막 매칭 시 깜빡 뜨고 사라지는 현상 발생. 이 최소값
+    // 아래로는 수축하지 않도록 가드. 너무 크면 긴 꼬리 part가 시간을 잠식하므로
+    // 시각적 최소 표시 시간(0.3초) 수준으로 설정.
+    const MIN_PART_DURATION: f64 = 0.3;
+
     let total_duration = line.end - line.start;
+
+    // 원본 duration이 너무 짧아 MIN * parts.len()도 못 채우면 split을 포기하고 원본 유지
+    if total_duration < MIN_PART_DURATION * (parts.len() as f64) {
+        return vec![line];
+    }
+
     let mut result = Vec::with_capacity(parts.len());
     let mut cursor = line.start;
     let last_idx = parts.len() - 1;
@@ -109,7 +121,12 @@ fn split_single_line_on_sentence_boundaries(line: SubtitleLine) -> Vec<SubtitleL
         let end = if idx == last_idx {
             line.end
         } else {
-            cursor + total_duration * (piece_chars as f64 / total_chars as f64)
+            let proportional = cursor + total_duration * (piece_chars as f64 / total_chars as f64);
+            // MIN 가드: 이 part가 너무 짧아지지 않도록, 그리고 이후 part에게
+            // 최소 duration을 남겨주도록 조정.
+            let min_end_for_this = cursor + MIN_PART_DURATION;
+            let max_end_for_this = line.end - MIN_PART_DURATION * ((last_idx - idx) as f64);
+            proportional.max(min_end_for_this).min(max_end_for_this)
         };
         result.push(SubtitleLine {
             text: piece,
@@ -615,6 +632,29 @@ mod tests {
         assert_eq!(result[0].text, "안녕하세요.");
         assert_eq!(result[1].text, "こんにちは。");
         assert_eq!(result[2].text, "Hello!");
+    }
+
+    #[test]
+    fn test_split_does_not_shrink_tiny_fragments() {
+        // "A." 같은 2자 part + 긴 뒤 문장 — A. duration이 MIN 이상
+        let input = vec![line("A. This is a much longer sentence here.", 0.0, 10.0)];
+        let result = split_lines_on_sentence_boundaries(input);
+        assert_eq!(result.len(), 2);
+        let first_dur = result[0].end - result[0].start;
+        assert!(
+            first_dur >= 0.3,
+            "짧은 part의 duration이 MIN(0.3) 이상이어야 함: actual={:.3}",
+            first_dur
+        );
+    }
+
+    #[test]
+    fn test_split_aborts_when_original_too_short_for_min() {
+        // 0.5초 원본에 2개 part → MIN 0.3 * 2 = 0.6 > 0.5 → split 포기
+        let input = vec![line("A. B.", 0.0, 0.5)];
+        let result = split_lines_on_sentence_boundaries(input);
+        assert_eq!(result.len(), 1, "원본 너무 짧으면 split 포기");
+        assert_eq!(result[0].text, "A. B.");
     }
 
     #[test]

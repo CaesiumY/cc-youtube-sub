@@ -40,6 +40,49 @@ describe("findSubtitleAt", () => {
   it("returns null in gap between entries", () => {
     expect(findSubtitleAt(entries, 4.0)).toBeNull();
   });
+
+  describe("with leadSec / lingerSec", () => {
+    it("lead 0.5 pulls entry start forward", () => {
+      // entry[0].start = 1.0 → lead 0.5로 0.5초부터 매칭
+      expect(findSubtitleAt(entries, 0.5, { leadSec: 0.5 })).toEqual(
+        entries[0],
+      );
+      expect(findSubtitleAt(entries, 0.49, { leadSec: 0.5 })).toBeNull();
+    });
+
+    it("lead does not affect dismiss timing", () => {
+      // entry[0].end = 3.0 → lead 0.5여도 end는 그대로 3.0에서 사라짐
+      expect(findSubtitleAt(entries, 2.99, { leadSec: 0.5 })).toEqual(
+        entries[0],
+      );
+      expect(findSubtitleAt(entries, 3.0, { leadSec: 0.5 })).toBeNull();
+    });
+
+    it("linger extends dismiss", () => {
+      // linger 0.5 → entry[0].end(3.0) + 0.5 = 3.5까지 표시
+      expect(findSubtitleAt(entries, 3.4, { lingerSec: 0.5 })).toEqual(
+        entries[0],
+      );
+      expect(findSubtitleAt(entries, 3.5, { lingerSec: 0.5 })).toBeNull();
+    });
+
+    it("zero opts equivalent to no opts", () => {
+      expect(
+        findSubtitleAt(entries, 2.0, { leadSec: 0, lingerSec: 0 }),
+      ).toEqual(entries[0]);
+      expect(
+        findSubtitleAt(entries, 3.0, { leadSec: 0, lingerSec: 0 }),
+      ).toBeNull();
+    });
+
+    it("lead prioritizes next entry when both could match", () => {
+      // entry[1].start = 5.0. time=4.6, lead=0.5 → 4.6 + 0.5 = 5.1 >= 5.0 → entry[1] 매칭
+      // (entry[0]은 end=3.0이라 이미 아님)
+      expect(findSubtitleAt(entries, 4.6, { leadSec: 0.5 })).toEqual(
+        entries[1],
+      );
+    });
+  });
 });
 
 describe("buildChunkHashInput", () => {
