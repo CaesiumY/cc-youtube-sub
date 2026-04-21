@@ -72,3 +72,11 @@ cd src-tauri && cargo clippy
 - **새 Tauri command 추가 시**: `lib.rs`의 `generate_handler![]` 매크로에 등록 필수
 - **상태 관리 원칙**: 서버 데이터는 TanStack Query, UI 상태는 Zustand
 - **캐시 키**: 청크 내 자막 라인들의 SHA256 해시
+
+## gstack + superpowers (프로젝트 특화)
+
+전역 라우팅 규칙은 `~/.claude/CLAUDE.md`의 `gstack + superpowers routing` 섹션을 따른다. 이 프로젝트 특화 추가 제약:
+
+- **`/qa` 범위**: Playwright Chromium은 Tauri 네이티브 윈도우에 접근 불가. `/qa`는 `pnpm dev` (Vite dev server + `mock-tauri` 폴백)로 띄운 프론트엔드 부분에만 적용 가능. Rust 백엔드와 IPC 경유 플로우는 `cargo test` 또는 수동 테스트로 대체.
+- **`/ship` 전 `/cso`**: Claude CLI subprocess 실행 + 외부 URL fetch + SQLite 영속화 조합으로 공격 표면이 작지 않음. `translate/`나 `claude/adapter.rs` 수정 시 `/cso daily` 권장 (프롬프트 인젝션 경계 확인).
+- **`/plan-eng-review` 중점 대상**: `buffer_manager.rs`(재생 위치 기반 상태 전이) 또는 `subtitle/` 파이프라인(fetch → parse → chunk → translate 데이터 흐름) 변경 시 시퀀스/상태 다이어그램 요구.
