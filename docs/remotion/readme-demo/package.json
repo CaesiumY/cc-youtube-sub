@@ -1,0 +1,26 @@
+{
+  "name": "readme-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "render:hero": "remotion still src/index.ts HeroStill ../../assets/readme/hero.png --overwrite",
+    "render:home": "remotion still src/index.ts HomeStill ../../assets/readme/home.png --overwrite",
+    "render:player": "remotion still src/index.ts PlayerStill ../../assets/readme/player.png --overwrite",
+    "render:stills": "pnpm render:hero && pnpm render:home && pnpm render:player",
+    "render:video": "remotion render src/index.ts ReadmeDemo ../../assets/readme/demo.mp4 --codec=h264 --overwrite",
+    "render:gif": "remotion render src/index.ts ReadmeDemo ../../assets/readme/demo.gif --codec=gif --every-nth-frame=2 --overwrite",
+    "render": "pnpm render:stills && pnpm render:video && pnpm render:gif"
+  },
+  "dependencies": {
+    "react": "^19",
+    "react-dom": "^19",
+    "remotion": "4.0.350"
+  },
+  "devDependencies": {
+    "@remotion/cli": "4.0.350",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "5.7.3"
+  }
+}
