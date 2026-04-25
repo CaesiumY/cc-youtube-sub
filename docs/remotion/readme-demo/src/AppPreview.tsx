@@ -223,12 +223,14 @@ function Callout({
         boxShadow: "0 22px 60px rgba(0,0,0,0.36)",
       }}
     >
-      <div style={{ fontSize: 18, fontWeight: 800 }}>{title}</div>
+      <div style={{ fontSize: 18, fontWeight: 800, color: "#f8fafc" }}>
+        {title}
+      </div>
       <div
         style={{
           marginTop: 7,
           fontSize: 14,
-          color: "#c4c4cc",
+          color: "#d4d4d8",
           lineHeight: 1.45,
         }}
       >
