@@ -19,8 +19,7 @@ export const sampleLines = [
   {
     original:
       "Today we are going to look at how local-first apps can feel fast.",
-    translated:
-      "오늘은 로컬 우선 앱이 어떻게 빠르게 느껴질 수 있는지 살펴보겠습니다.",
+    translated: "로컬 우선 앱이 빠르게 느껴지는 이유를 살펴봅니다.",
   },
   {
     original: "The key is to translate ahead of the playback position.",
