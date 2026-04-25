@@ -155,35 +155,42 @@ function generateMockSubtitles(): SubtitleChunk[] {
   ];
 
   // 30줄을 ~30초 단위로 청크 분할
+  const firstLine = lines[0];
+  if (!firstLine) return [];
+
   const chunks: SubtitleChunk[] = [];
   let chunkLines: SubtitleLine[] = [];
-  let chunkStart = lines[0]!.start;
+  let chunkStart = firstLine.start;
   let chunkIndex = 0;
 
   for (const line of lines) {
     const elapsed = line.end - chunkStart;
-    if (chunkLines.length >= 10 || elapsed >= 30) {
-      const lastLine = chunkLines[chunkLines.length - 1]!;
-      chunks.push({
-        index: chunkIndex,
-        start_time: chunkStart,
-        end_time: lastLine.end,
-        lines: [...chunkLines],
-      });
-      chunkIndex++;
-      chunkLines = [];
-      chunkStart = line.start;
+    if (chunkLines.length > 0 && (chunkLines.length >= 10 || elapsed >= 30)) {
+      const lastLine = chunkLines.at(-1);
+      if (lastLine) {
+        chunks.push({
+          index: chunkIndex,
+          start_time: chunkStart,
+          end_time: lastLine.end,
+          lines: [...chunkLines],
+        });
+        chunkIndex++;
+        chunkLines = [];
+        chunkStart = line.start;
+      }
     }
     chunkLines.push(line);
   }
   if (chunkLines.length > 0) {
-    const lastLine = chunkLines[chunkLines.length - 1]!;
-    chunks.push({
-      index: chunkIndex,
-      start_time: chunkStart,
-      end_time: lastLine.end,
-      lines: chunkLines,
-    });
+    const lastLine = chunkLines.at(-1);
+    if (lastLine) {
+      chunks.push({
+        index: chunkIndex,
+        start_time: chunkStart,
+        end_time: lastLine.end,
+        lines: chunkLines,
+      });
+    }
   }
 
   return chunks;

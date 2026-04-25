@@ -198,7 +198,10 @@ export function useTranslationPipeline(videoId: string) {
 
   // cleanup on videoId change
   useEffect(() => {
+    const cleanupVideoId = videoId;
+
     return () => {
+      void cleanupVideoId;
       initializedRef.current = false;
       chunkHashesRef.current = new Map();
       activeTranslations.current = 0;
