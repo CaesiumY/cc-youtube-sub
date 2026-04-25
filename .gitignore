@@ -31,3 +31,6 @@ vite.config.js
 
 # OMC
 .omc/
+
+# Git worktrees
+.worktrees/
