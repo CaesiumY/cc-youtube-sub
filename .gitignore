@@ -31,3 +31,9 @@ vite.config.js
 
 # OMC
 .omc/
+
+# Superpowers local brainstorm artifacts
+.superpowers/
+
+# Git worktrees
+.worktrees/
