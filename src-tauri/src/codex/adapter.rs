@@ -34,6 +34,10 @@ const CMD_NOT_FOUND_EXIT_CODE: i32 = 9009;
 /// 플랫폼별 codex Command 생성.
 ///
 /// Windows: `cmd /c codex <args>` + CREATE_NO_WINDOW (Claude 어댑터와 동일 패턴).
+///
+/// `kill_on_drop(true)`: 응답 타임아웃이 발생하면 `wait_with_output` future가 drop되는데,
+/// 이 플래그가 없으면 자식 프로세스가 orphan으로 남아 계속 리소스를 소모한다.
+/// non-Windows는 codex를 직접 죽이고, Windows는 cmd 래퍼를 죽인다.
 fn build_codex_command(args: &[&str]) -> Command {
     #[cfg(target_os = "windows")]
     {
@@ -46,12 +50,14 @@ fn build_codex_command(args: &[&str]) -> Command {
         full_args.extend_from_slice(args);
         cmd.args(&full_args);
         cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.kill_on_drop(true);
         cmd
     }
     #[cfg(not(target_os = "windows"))]
     {
         let mut cmd = Command::new("codex");
         cmd.args(args);
+        cmd.kill_on_drop(true);
         cmd
     }
 }
@@ -68,7 +74,7 @@ const CODEX_REASONING_EFFORT_OVERRIDE: &str = "model_reasoning_effort=\"low\"";
 ///
 /// 형식 (codex-cli 0.132.0 실측 기준):
 /// - 첫 호출:   `exec --json --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="low" -`
-/// - 이어가기:  `exec resume <thread_id> --json --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="low" -`
+/// - 이어가기:  `exec resume <thread_id> --json --skip-git-repo-check -c model_reasoning_effort="low" -`
 ///
 /// - `--json`: 이벤트를 JSONL로 stdout에 출력
 /// - `--skip-git-repo-check`: codex는 기본적으로 git 저장소 안에서 실행됨을 가정한다.
@@ -76,23 +82,30 @@ const CODEX_REASONING_EFFORT_OVERRIDE: &str = "model_reasoning_effort=\"low\"";
 /// - `--sandbox read-only`: 자막 번역은 파일 쓰기·셸 실행이 전혀 불필요하다. 외부 데이터
 ///   (YouTube 자막/영상 설명)가 프롬프트에 보간되므로, 악의적 자막이 프롬프트 인젝션으로
 ///   도구 호출을 유도하더라도 read-only sandbox가 셸/파일 쓰기를 차단한다 (defense-in-depth).
+///   **첫 호출(`codex exec`)에만 붙인다** — `codex exec resume` 서브커맨드는 `--sandbox`
+///   플래그를 인식하지 못한다(codex-cli 0.132.0 실측). resume 세션은 첫 호출에서
+///   read-only로 생성된 thread의 sandbox 설정을 그대로 계승한다.
 /// - `-c model_reasoning_effort="low"`: 빠른 응답 우선 (위 상수 참조).
 /// - 마지막 `-`: stdin에서 prompt를 읽으라는 codex의 관례 (PROMPT 인자 자리에 `-`).
 ///
 /// 모델 이름은 지정하지 않는다 — codex CLI는 모델 카탈로그 명령이 없어 alias를 신뢰할 수
 /// 없고, codex 기본 모델(사용자 config의 `model` 값)을 그대로 사용한다.
 fn build_codex_args(session_id: Option<&str>, is_first_in_session: bool) -> Vec<&str> {
+    // 실제 resume 호출 여부: session_id가 있고 첫 호출이 아닐 때.
+    let resume_id = session_id.filter(|_| !is_first_in_session);
+
     let mut args = vec!["exec"];
-    if let Some(uuid) = session_id {
-        if !is_first_in_session {
-            args.push("resume");
-            args.push(uuid);
-        }
+    if let Some(uuid) = resume_id {
+        args.push("resume");
+        args.push(uuid);
     }
     args.push("--json");
     args.push("--skip-git-repo-check");
-    args.push("--sandbox");
-    args.push("read-only");
+    // `--sandbox`는 `codex exec`만 지원, `codex exec resume`은 미지원 — 첫 호출에만.
+    if resume_id.is_none() {
+        args.push("--sandbox");
+        args.push("read-only");
+    }
     args.push("-c");
     args.push(CODEX_REASONING_EFFORT_OVERRIDE);
     args.push("-");
@@ -170,10 +183,10 @@ impl CodexAdapter {
             .map_err(|e| AppError::Process(format!("Codex 프로세스 시작 실패: {}", e)))?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .await
-                .map_err(|e| AppError::Process(format!("stdin 쓰기 실패: {}", e)))?;
+            // codex가 즉시 종료(잘못된 인자/미로그인 등)하면 stdin이 broken pipe가 된다.
+            // 여기서 즉시 실패하면 codex stderr의 진짜 원인이 "stdin 쓰기 실패"로 가려지므로,
+            // write 실패는 삼키고 아래 wait_with_output에서 exit code + stderr로 진단한다.
+            let _ = stdin.write_all(prompt.as_bytes()).await;
             // drop으로 stdin 닫기 → EOF
         }
 
@@ -296,6 +309,8 @@ mod tests {
 
     #[test]
     fn resume_args_subsequent_call() {
+        // `codex exec resume`는 `--sandbox`를 지원하지 않으므로 resume 경로엔 없어야 한다.
+        // resume 세션은 첫 호출에서 생성된 thread의 sandbox(read-only)를 계승한다.
         let args = build_codex_args(Some("thr_abc"), false);
         assert_eq!(
             args,
@@ -305,8 +320,6 @@ mod tests {
                 "thr_abc",
                 "--json",
                 "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
                 "-c",
                 CODEX_REASONING_EFFORT_OVERRIDE,
                 "-",
@@ -321,17 +334,30 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_is_always_read_only() {
-        // 보안: 자막 번역은 파일 쓰기·셸 실행이 불필요. 프롬프트 인젝션이 도구 호출을
-        // 유도해도 read-only sandbox가 차단한다 (defense-in-depth) — 회귀 방지.
-        for first in [true, false] {
-            let args = build_codex_args(Some("thr"), first);
+    fn first_call_has_read_only_sandbox() {
+        // 보안: 자막 번역은 파일 쓰기·셸 실행이 불필요. 첫 호출(codex exec)에
+        // --sandbox read-only를 박아 프롬프트 인젝션이 도구 호출을 유도해도 차단한다.
+        for args in [
+            build_codex_args(None, true),
+            build_codex_args(Some("thr"), true),
+        ] {
             let idx = args
                 .iter()
                 .position(|&a| a == "--sandbox")
-                .expect("--sandbox 플래그 누락");
+                .expect("첫 호출에 --sandbox 누락");
             assert_eq!(args[idx + 1], "read-only");
         }
+    }
+
+    #[test]
+    fn resume_call_omits_sandbox() {
+        // `codex exec resume`는 --sandbox 플래그를 인식하지 못한다 — resume 경로에
+        // --sandbox가 있으면 codex가 인자 파싱 단계에서 거부한다 (회귀 방지).
+        let args = build_codex_args(Some("thr_abc"), false);
+        assert!(
+            !args.contains(&"--sandbox"),
+            "resume 경로에 --sandbox가 포함되면 codex exec resume이 거부한다"
+        );
     }
 
     #[test]

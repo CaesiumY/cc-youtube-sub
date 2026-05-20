@@ -137,7 +137,12 @@ impl BufferManager {
         }
 
         // Claude는 클라이언트가 UUID를 미리 생성해 첫 호출 시 --session-id로 넘기는 모델.
-        // Codex는 서버가 첫 호출 응답의 session_configured 이벤트로 thread_id를 알려줌.
+        // Codex는 세션 재사용을 하지 않는다 — `codex exec resume`에는 Claude의
+        // --fork-session 같은 동시성 안전장치가 없어, 같은 thread를 동시에(MAX_CONCURRENT)
+        // 이어쓰면 세션 파일 충돌/turn 순서 꼬임이 발생한다. 따라서 Codex는 처음부터
+        // session_reuse_disabled=true로 두어 매 청크를 독립 `codex exec`로 호출한다.
+        // 청크 간 맥락은 프롬프트의 previous_context로 보완된다.
+        let session_reuse_disabled = matches!(backend, TranslationBackend::Codex);
         let backend_session_id = match backend {
             TranslationBackend::Claude => Some(uuid::Uuid::new_v4().to_string()),
             TranslationBackend::Codex => None,
@@ -157,7 +162,7 @@ impl BufferManager {
             backend,
             backend_session_id,
             session_initialized: false,
-            session_reuse_disabled: false,
+            session_reuse_disabled,
             rate_limited_until: None,
         });
     }
@@ -390,9 +395,13 @@ impl BufferManager {
             .statuses
             .insert(chunk_index, ChunkTranslationStatus::Done);
         state.in_progress = state.in_progress.saturating_sub(1);
-        // Codex의 경우 첫 호출 응답에서 반환된 thread_id를 캡처해
-        // 후속 청크의 resume 인자로 사용 가능하게 한다. Claude는 returned_session_id가 항상 None.
-        if state.backend_session_id.is_none() && returned_session_id.is_some() {
+        // 세션 재사용이 활성인 백엔드만 반환된 세션 토큰을 캡처한다.
+        // Codex는 session_reuse_disabled=true(매 청크 독립 호출)이므로 캡처하지 않는다 —
+        // 캡처하면 backend_session_id가 채워져도 use_session=false라 안 읽혀 혼란만 준다.
+        if !state.session_reuse_disabled
+            && state.backend_session_id.is_none()
+            && returned_session_id.is_some()
+        {
             state.backend_session_id = returned_session_id;
         }
         // 첫 청크 번역 성공 → 세션이 생성되었으므로 이후는 resume 모드로
@@ -1181,9 +1190,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_init_codex_starts_without_session_id() {
-        // Codex는 서버가 첫 응답의 session_configured 이벤트로 thread_id를 알려주므로
-        // init 시점엔 None이어야 한다. handle_completion에서 처음 채워진다.
+    async fn test_init_codex_disables_session_reuse() {
+        // Codex는 `codex exec resume`에 --fork-session 같은 동시성 안전장치가 없어
+        // 세션 재사용을 처음부터 비활성화한다 (매 청크 독립 codex exec 호출).
+        // 그 결과 backend_session_id도 None, session_reuse_disabled=true.
         let mgr = BufferManager::new();
         mgr.init(
             "vid1".into(),
@@ -1196,8 +1206,30 @@ mod tests {
         .await;
         let lock = mgr.state.lock().await;
         let state = lock.as_ref().unwrap();
-        assert!(state.backend_session_id.is_none());
         assert_eq!(state.backend, TranslationBackend::Codex);
+        assert!(state.backend_session_id.is_none());
+        assert!(
+            state.session_reuse_disabled,
+            "Codex는 세션 재사용을 비활성화해야 동시 resume 충돌을 피한다"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_init_claude_enables_session_reuse() {
+        // Claude는 --fork-session으로 동시 호출이 안전하므로 세션 재사용을 유지한다.
+        let mgr = BufferManager::new();
+        mgr.init(
+            "vid1".into(),
+            make_chunks(2),
+            None,
+            vec![],
+            None,
+            TranslationBackend::Claude,
+        )
+        .await;
+        let lock = mgr.state.lock().await;
+        let state = lock.as_ref().unwrap();
+        assert!(!state.session_reuse_disabled);
     }
 
     #[tokio::test]

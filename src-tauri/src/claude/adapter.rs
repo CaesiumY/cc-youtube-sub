@@ -21,6 +21,9 @@ const CMD_NOT_FOUND_EXIT_CODE: i32 = 9009;
 ///
 /// Windows: `cmd /c claude <args>` — shell이 PATHEXT를 해석하여 .cmd 래퍼를 자동 탐색
 /// Others: `claude <args>` — 직접 실행
+///
+/// `kill_on_drop(true)`: 응답 타임아웃 시 `wait_with_output` future가 drop될 때
+/// 자식 프로세스가 orphan으로 남지 않도록 정리한다.
 fn build_claude_command(args: &[&str]) -> Command {
     #[cfg(target_os = "windows")]
     {
@@ -34,12 +37,14 @@ fn build_claude_command(args: &[&str]) -> Command {
         full_args.extend_from_slice(args);
         cmd.args(&full_args);
         cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.kill_on_drop(true);
         cmd
     }
     #[cfg(not(target_os = "windows"))]
     {
         let mut cmd = Command::new("claude");
         cmd.args(args);
+        cmd.kill_on_drop(true);
         cmd
     }
 }

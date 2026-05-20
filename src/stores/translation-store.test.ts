@@ -57,6 +57,33 @@ describe("translation-store isLoading 생명주기", () => {
     expect(useTranslationStore.getState().isLoading).toBe(false);
   });
 
+  it("회귀: 첫 청크가 에러로 끝나도 초기 로딩(isLoading)이 해제된다", () => {
+    // browser mock 경로에서 첫 translateChunk가 실패하면 markChunkStatus(error)만
+    // 호출된다. 종료 상태(error 포함)에서 isLoading을 끄지 않으면 '번역 준비 중'이
+    // 영원히 표시된다.
+    const s = useTranslationStore.getState();
+    s.startLoading("vid1");
+    s.setChunks(makeChunks(10));
+    expect(useTranslationStore.getState().isLoading).toBe(true);
+
+    s.markChunkStatus(0, "translating"); // 종료 상태 아님 — 여전히 로딩
+    expect(useTranslationStore.getState().isLoading).toBe(true);
+
+    s.markChunkStatus(0, "error"); // 종료 상태 — 초기 로딩 해제
+    expect(useTranslationStore.getState().isLoading).toBe(false);
+  });
+
+  it("markChunkStatus는 일단 꺼진 isLoading을 다시 켜지 않는다", () => {
+    const s = useTranslationStore.getState();
+    s.startLoading("vid1");
+    s.setChunks(makeChunks(10));
+    s.markChunkStatus(0, "done"); // isLoading false
+    expect(useTranslationStore.getState().isLoading).toBe(false);
+
+    s.markChunkStatus(1, "translating"); // 다시 켜지면 안 됨
+    expect(useTranslationStore.getState().isLoading).toBe(false);
+  });
+
   it("markChunkStatus는 completedChunks/cachedChunks를 계속 추적한다", () => {
     const s = useTranslationStore.getState();
     s.startLoading("vid1");

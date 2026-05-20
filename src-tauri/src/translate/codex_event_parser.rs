@@ -81,7 +81,10 @@ fn extract_error_detail(value: &serde_json::Value) -> String {
     if let Some(s) = value.get("error").and_then(|e| e.as_str()) {
         return s.to_string();
     }
-    "unknown error".to_string()
+    // 알려진 경로가 모두 빗나가면 raw 이벤트 JSON을 그대로 노출한다.
+    // codex 에러 이벤트 형식은 버전에 따라 다를 수 있어, "unknown error"로 뭉개면
+    // 진짜 실패 원인을 잃는다.
+    format!("unrecognized error event: {}", value)
 }
 
 /// 첫 호출 응답에서 thread(session) ID를 추출.

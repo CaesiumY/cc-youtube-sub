@@ -29,29 +29,31 @@ export function PlayerView() {
   // 대비 — Home에서 이미 검증을 통과한 사용자도 같은 백엔드면 즉시 통과한다.
   useEffect(() => {
     if (!isTauri()) return;
-    checkEnvironment(backend).catch((err: unknown) => {
-      // Tauri IPC 에러가 string으로 올 수 있으므로 방어적 파싱
-      let parsed: unknown;
-      try {
-        parsed = typeof err === "string" ? JSON.parse(err) : err;
-      } catch {
-        parsed = err;
-      }
-      const appErr = parsed as AppError | undefined;
-      if (appErr?.kind === "EnvironmentCheck") {
-        if (appErr.message?.startsWith("NOT_INSTALLED")) {
-          setEnvError({ kind: "not_installed" });
-        } else {
-          setEnvError({ kind: "execution_failed" });
+    checkEnvironment(backend)
+      .then(() => setEnvError(null))
+      .catch((err: unknown) => {
+        // Tauri IPC 에러가 string으로 올 수 있으므로 방어적 파싱
+        let parsed: unknown;
+        try {
+          parsed = typeof err === "string" ? JSON.parse(err) : err;
+        } catch {
+          parsed = err;
         }
-      } else {
-        // EnvironmentCheck가 아닌 에러는 모달을 띄우지 않고 콘솔에만 기록
-        console.error(
-          "[PlayerView] unexpected error from checkEnvironment:",
-          parsed,
-        );
-      }
-    });
+        const appErr = parsed as AppError | undefined;
+        if (appErr?.kind === "EnvironmentCheck") {
+          if (appErr.message?.startsWith("NOT_INSTALLED")) {
+            setEnvError({ kind: "not_installed" });
+          } else {
+            setEnvError({ kind: "execution_failed" });
+          }
+        } else {
+          // EnvironmentCheck가 아닌 에러는 모달을 띄우지 않고 콘솔에만 기록
+          console.error(
+            "[PlayerView] unexpected error from checkEnvironment:",
+            parsed,
+          );
+        }
+      });
   }, [backend]);
 
   // 핵심 훅
