@@ -5,18 +5,19 @@
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](https://www.rust-lang.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue?logo=typescript)](https://www.typescriptlang.org)
 
-YouTube 영상의 자막을 **Claude Code CLI**로 실시간 번역해 영상 위에 한국어 오버레이로 보여주는 Tauri 데스크톱 앱입니다.
+YouTube 영상의 자막을 **Claude Code CLI** 또는 **OpenAI Codex CLI**로 실시간 번역해 영상 위에 한국어 오버레이로 보여주는 Tauri 데스크톱 앱입니다.
 
-Claude Code 구독을 활용하므로 별도 API 키나 API 과금 없이, YouTube 자막 fetch와 Claude Code CLI 번역을 데스크톱 앱에서 오케스트레이션하고 번역 캐시는 로컬 SQLite에 저장합니다.
+CLI 구독을 활용하므로 별도 API 키나 API 과금 없이, YouTube 자막 fetch와 CLI 번역을 데스크톱 앱에서 오케스트레이션하고 번역 캐시는 로컬 SQLite에 저장합니다. 홈 화면에서 번역 백엔드를 선택할 수 있습니다.
 
 ## 왜 이 앱인가
 
 | 가치 | 설명 |
 |------|------|
 | 실시간 오버레이 | YouTube 플레이어 위에 번역 자막을 자연스럽게 표시합니다 |
+| 백엔드 선택 | Claude Code CLI와 OpenAI Codex CLI 중 번역 백엔드를 골라 쓸 수 있습니다 |
 | 청크 기반 번역 | 긴 영상도 30초-1분 단위로 나누어 빠르게 번역을 시작합니다 |
 | 로컬 캐시 | 한 번 번역한 자막은 SQLite에 저장해 동일 영상 재방문 시 재사용합니다 |
-| 별도 API 키 불필요 | Claude Code CLI 로그인 상태를 사용하므로 추가 API 키를 요구하지 않습니다 |
+| 별도 API 키 불필요 | Claude Code CLI 또는 Codex CLI 로그인 상태를 사용하므로 추가 API 키를 요구하지 않습니다 |
 
 ## 데모
 
@@ -34,7 +35,9 @@ https://github.com/user-attachments/assets/d19ef103-6b9a-4e1e-a4a1-004e7485d7f7
 - [pnpm](https://pnpm.io)
 - [Rust](https://rustup.rs)
 - [Tauri 사전 요구사항](https://v2.tauri.app/start/prerequisites/)
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) 설치 및 로그인 완료
+- 번역 백엔드 중 **하나 이상** 설치 및 로그인 완료:
+  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — `npm install -g @anthropic-ai/claude-code`
+  - [OpenAI Codex CLI](https://github.com/openai/codex) — `npm install -g @openai/codex`
 
 ### 실행
 
@@ -53,10 +56,11 @@ pnpm dev
 
 ## 주요 기능
 
-- **실시간 자막 번역**: YouTube 재생 중 Claude Code CLI가 자막을 한국어로 번역합니다.
+- **실시간 자막 번역**: YouTube 재생 중 선택한 백엔드 CLI가 자막을 한국어로 번역합니다.
+- **번역 백엔드 선택**: 홈 화면에서 Claude Code CLI와 OpenAI Codex CLI 중 선택하며, 선택한 CLI의 설치 여부를 자동 확인합니다.
 - **자막 오버레이**: 영상 위에 반투명 자막 박스를 표시하고 원문/번역을 토글할 수 있습니다.
 - **사전 버퍼링**: 재생 위치 앞 청크를 미리 번역해 시청 중 끊김을 줄입니다.
-- **SQLite 캐시**: `(video_id, chunk_hash)` 기준으로 번역 결과를 저장합니다.
+- **SQLite 캐시**: `(video_id, chunk_hash)` 기준으로 번역 결과를 저장하며, 백엔드와 무관하게 재사용합니다.
 - **긴 영상 대응**: 자막을 30초-1분 단위로 나누어 긴 강의나 발표 영상도 처리합니다.
 - **데스크톱 UX**: Tauri v2 기반으로 Windows 우선 데스크톱 앱 경험을 제공합니다.
 
@@ -67,7 +71,7 @@ YouTube URL 입력
   -> 자막 fetch
   -> 30초-1분 청크 분할
   -> SQLite 캐시 확인
-  -> 캐시 miss 청크를 Claude Code CLI subprocess로 번역
+  -> 캐시 miss 청크를 선택한 백엔드 CLI(Claude / Codex) subprocess로 번역
   -> JSON 결과 검증
   -> 캐시 저장
   -> 영상 위 자막 오버레이 표시
@@ -83,7 +87,7 @@ YouTube URL 입력
 | Frontend | React 19, TypeScript 5.7, Vite 6 |
 | Routing / State | TanStack Router, TanStack Query, Zustand |
 | Styling | Tailwind CSS v4, Pretendard, Motion |
-| Translation | Claude Code CLI subprocess, stream-json parsing |
+| Translation | Claude Code CLI / OpenAI Codex CLI subprocess, stream-json · NDJSON parsing |
 | Subtitle / Cache | yt-transcript-rs, reqwest, regex, rusqlite |
 
 ## 개발 명령어
@@ -123,9 +127,11 @@ cc-youtube-sub/
 │   └── lib/                    # Tauri command wrapper, mock-tauri, 유틸리티
 ├── src-tauri/                  # Rust 백엔드
 │   └── src/
+│       ├── backend.rs          # TranslationBackend enum (Claude / Codex dispatch)
 │       ├── subtitle/           # 자막 fetch, 파싱, 청크 분할
-│       ├── translate/          # 프롬프트, JSONL 파싱, 검증
+│       ├── translate/          # 프롬프트, 백엔드별 출력 파싱, 검증
 │       ├── claude/             # Claude Code CLI 프로세스 관리
+│       ├── codex/              # OpenAI Codex CLI 프로세스 관리
 │       ├── cache.rs            # SQLite 캐시
 │       └── buffer_manager.rs   # 재생 위치 기반 사전 번역
 ├── docs/                       # PRD, 설계 문서, 테스트 전략
