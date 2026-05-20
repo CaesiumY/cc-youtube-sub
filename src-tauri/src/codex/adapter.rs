@@ -67,12 +67,15 @@ const CODEX_REASONING_EFFORT_OVERRIDE: &str = "model_reasoning_effort=\"low\"";
 /// 분리한 이유: subprocess 없이 인자 생성 로직을 단위 테스트할 수 있도록.
 ///
 /// 형식 (codex-cli 0.132.0 실측 기준):
-/// - 첫 호출:   `exec --json --skip-git-repo-check -c model_reasoning_effort="low" -`
-/// - 이어가기:  `exec resume <thread_id> --json --skip-git-repo-check -c model_reasoning_effort="low" -`
+/// - 첫 호출:   `exec --json --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="low" -`
+/// - 이어가기:  `exec resume <thread_id> --json --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="low" -`
 ///
 /// - `--json`: 이벤트를 JSONL로 stdout에 출력
 /// - `--skip-git-repo-check`: codex는 기본적으로 git 저장소 안에서 실행됨을 가정한다.
 ///   이 데스크톱 앱은 임의 위치에서 실행되므로 이 플래그가 없으면 거부될 수 있다.
+/// - `--sandbox read-only`: 자막 번역은 파일 쓰기·셸 실행이 전혀 불필요하다. 외부 데이터
+///   (YouTube 자막/영상 설명)가 프롬프트에 보간되므로, 악의적 자막이 프롬프트 인젝션으로
+///   도구 호출을 유도하더라도 read-only sandbox가 셸/파일 쓰기를 차단한다 (defense-in-depth).
 /// - `-c model_reasoning_effort="low"`: 빠른 응답 우선 (위 상수 참조).
 /// - 마지막 `-`: stdin에서 prompt를 읽으라는 codex의 관례 (PROMPT 인자 자리에 `-`).
 ///
@@ -88,6 +91,8 @@ fn build_codex_args(session_id: Option<&str>, is_first_in_session: bool) -> Vec<
     }
     args.push("--json");
     args.push("--skip-git-repo-check");
+    args.push("--sandbox");
+    args.push("read-only");
     args.push("-c");
     args.push(CODEX_REASONING_EFFORT_OVERRIDE);
     args.push("-");
@@ -260,6 +265,8 @@ mod tests {
                 "exec",
                 "--json",
                 "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
                 "-c",
                 CODEX_REASONING_EFFORT_OVERRIDE,
                 "-",
@@ -278,6 +285,8 @@ mod tests {
                 "exec",
                 "--json",
                 "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
                 "-c",
                 CODEX_REASONING_EFFORT_OVERRIDE,
                 "-",
@@ -296,6 +305,8 @@ mod tests {
                 "thr_abc",
                 "--json",
                 "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
                 "-c",
                 CODEX_REASONING_EFFORT_OVERRIDE,
                 "-",
@@ -307,6 +318,20 @@ mod tests {
     fn reasoning_effort_override_is_low() {
         // 빠른 응답 우선 정책 — 회귀 방지
         assert!(CODEX_REASONING_EFFORT_OVERRIDE.contains("low"));
+    }
+
+    #[test]
+    fn sandbox_is_always_read_only() {
+        // 보안: 자막 번역은 파일 쓰기·셸 실행이 불필요. 프롬프트 인젝션이 도구 호출을
+        // 유도해도 read-only sandbox가 차단한다 (defense-in-depth) — 회귀 방지.
+        for first in [true, false] {
+            let args = build_codex_args(Some("thr"), first);
+            let idx = args
+                .iter()
+                .position(|&a| a == "--sandbox")
+                .expect("--sandbox 플래그 누락");
+            assert_eq!(args[idx + 1], "read-only");
+        }
     }
 
     #[test]
