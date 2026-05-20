@@ -1,3 +1,4 @@
+pub mod codex_event_parser;
 pub mod jsonl_parser;
 pub mod prompt;
 pub mod validator;
@@ -49,7 +50,7 @@ mod integration_tests {
     ) -> Vec<TranslationEntry> {
         // 통합 테스트 파이프라인은 세션 없이 독립 실행 = 첫 호출 모드
         let prompt = build_prompt(chunk, video_info, previous_context, true);
-        let raw = ClaudeAdapter::execute(ExecuteParams {
+        let result = ClaudeAdapter::execute(ExecuteParams {
             prompt: &prompt,
             timeout_secs: 120,
             model,
@@ -58,7 +59,7 @@ mod integration_tests {
         })
         .await
         .expect("Claude subprocess 실행 실패");
-        let json_text = extract_text_from_jsonl(&raw).expect("JSONL 파싱 실패");
+        let json_text = extract_text_from_jsonl(&result.raw_output).expect("JSONL 파싱 실패");
         validate_translation(&json_text).expect("번역 결과 검증 실패")
     }
 

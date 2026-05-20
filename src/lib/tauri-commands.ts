@@ -57,13 +57,13 @@ async function getInvoke() {
 
 // ── 커맨드 래퍼 ──────────────────────────────────────
 
-export async function checkEnvironment(): Promise<string> {
+export async function checkEnvironment(backend?: string): Promise<string> {
   if (!isTauri()) {
     const mock = await import("./mock-tauri");
     return mock.checkEnvironment();
   }
   const invoke = await getInvoke();
-  return invoke<string>("check_environment");
+  return invoke<string>("check_environment", { backend: backend ?? null });
 }
 
 export async function fetchSubtitles(
@@ -91,6 +91,7 @@ export async function translateChunk(
   videoInfo?: VideoInfo,
   previousContext?: SubtitleLine[],
   model?: string,
+  backend?: string,
 ): Promise<TranslationEntry[]> {
   if (!isTauri()) {
     const mock = await import("./mock-tauri");
@@ -102,6 +103,7 @@ export async function translateChunk(
     videoInfo: videoInfo ?? null,
     previousContext: previousContext ?? null,
     model: model ?? null,
+    backend: backend ?? null,
   });
 }
 
@@ -166,6 +168,7 @@ export async function initBuffer(
   videoInfo: VideoInfo | null,
   cachedIndices: number[],
   model?: string,
+  backend?: string,
 ): Promise<void> {
   if (!isTauri()) return;
   const invoke = await getInvoke();
@@ -175,6 +178,7 @@ export async function initBuffer(
     videoInfo,
     cachedIndices,
     model: model ?? null,
+    backend: backend ?? null,
   });
 }
 

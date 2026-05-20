@@ -5,17 +5,20 @@ use serde::Serialize;
 use tauri::Emitter;
 use tokio::sync::Mutex;
 
+use crate::backend::{ExecuteParams, TranslationBackend};
 use crate::cache::{compute_chunk_hash, TranslationCache};
-use crate::claude::adapter::{ClaudeAdapter, ExecuteParams};
 use crate::error::AppError;
 use crate::subtitle::{SubtitleChunk, SubtitleLine};
-use crate::translate::jsonl_parser::extract_text_from_jsonl;
 use crate::translate::prompt::build_prompt;
 use crate::translate::validator::validate_translation;
 use crate::translate::{TranslationEntry, VideoInfo};
 
-/// 현재 청크 이후 미리 번역할 청크 수
-const LOOK_AHEAD: usize = 6;
+/// 현재 청크 이후 미리 번역할 청크 수.
+///
+/// 청크는 30초~1분 단위이므로 10이면 현재 위치 기준 약 5~10분 앞까지 사전 번역한다.
+/// 값을 키우면 미번역 구간을 만날 확률이 줄지만, 사용자가 끝까지 보지 않을 수도 있는
+/// 청크까지 번역해 CLI 호출이 늘어난다 (캐시 덕에 재방문은 무료).
+const LOOK_AHEAD: usize = 10;
 /// 동시 번역 프로세스 최대 수
 const MAX_CONCURRENT: usize = 4;
 /// rate limit 감지 시 임시로 내려갈 동시 실행 수
@@ -74,11 +77,15 @@ struct BufferState {
     statuses: HashMap<i32, ChunkTranslationStatus>,
     in_progress: usize,
     session_id: u64,
-    /// Claude CLI 세션 UUID — 같은 영상의 모든 청크가 공유하여 맥락 연속성 확보
-    claude_session_id: String,
+    /// 번역 백엔드 종류 — init 시 결정, 세션 동안 불변.
+    backend: TranslationBackend,
+    /// 백엔드 세션 토큰. 같은 영상의 청크들이 공유해 맥락 연속성 확보.
+    /// - Claude: init에서 클라이언트가 UUID를 미리 생성 → `Some(uuid)`
+    /// - Codex: init 시 `None`, 첫 호출 응답의 thread_id가 들어가면 `Some(thread_id)`
+    backend_session_id: Option<String>,
     /// 세션이 생성되었는지 (첫 청크 번역 성공 여부)
     session_initialized: bool,
-    /// 세션 충돌이 한 번이라도 감지되면 true — 이후 청크는 claude_session_id 없이
+    /// 세션 충돌이 한 번이라도 감지되면 true — 이후 청크는 backend_session_id 없이
     /// 독립 실행(맥락 손실, 안정성 우선).
     session_reuse_disabled: bool,
     /// rate limit 백오프 종료 시각
@@ -113,6 +120,7 @@ impl BufferManager {
         video_info: Option<VideoInfo>,
         cached_indices: Vec<i32>,
         model: Option<String>,
+        backend: TranslationBackend,
     ) {
         let chunk_hashes: HashMap<i32, String> = chunks
             .iter()
@@ -128,6 +136,13 @@ impl BufferManager {
             }
         }
 
+        // Claude는 클라이언트가 UUID를 미리 생성해 첫 호출 시 --session-id로 넘기는 모델.
+        // Codex는 서버가 첫 호출 응답의 session_configured 이벤트로 thread_id를 알려줌.
+        let backend_session_id = match backend {
+            TranslationBackend::Claude => Some(uuid::Uuid::new_v4().to_string()),
+            TranslationBackend::Codex => None,
+        };
+
         let mut lock = self.state.lock().await;
         *lock = Some(BufferState {
             video_id,
@@ -139,7 +154,8 @@ impl BufferManager {
             statuses,
             in_progress: 0,
             session_id: 0,
-            claude_session_id: uuid::Uuid::new_v4().to_string(),
+            backend,
+            backend_session_id,
             session_initialized: false,
             session_reuse_disabled: false,
             rate_limited_until: None,
@@ -205,10 +221,10 @@ impl BufferManager {
                     .insert(idx, ChunkTranslationStatus::InProgress);
                 state.in_progress += 1;
 
-                // 세션 재사용 여부/bootstrap 상태에 따라 Claude CLI 호출 모드 결정
+                // 세션 재사용 여부/bootstrap 상태에 따라 백엔드 호출 모드 결정
                 let use_session = !state.session_reuse_disabled;
-                let claude_session_id = if use_session {
-                    Some(state.claude_session_id.clone())
+                let session_token = if use_session {
+                    state.backend_session_id.clone()
                 } else {
                     None
                 };
@@ -241,7 +257,8 @@ impl BufferManager {
                     chunk_hash,
                     retry_count,
                     chunk_index: idx,
-                    claude_session_id,
+                    backend: state.backend,
+                    session_token,
                     is_first_in_session,
                 });
             }
@@ -270,18 +287,20 @@ impl BufferManager {
                     task.video_info.as_ref(),
                     task.prev_context.as_deref(),
                     task.model.as_deref(),
-                    task.claude_session_id.as_deref(),
+                    task.backend,
+                    task.session_token.as_deref(),
                     task.is_first_in_session,
                 )
                 .await;
 
                 match result {
-                    Ok(entries) => {
+                    Ok((entries, returned_session_id)) => {
                         buffer
                             .handle_completion(
                                 task.chunk_index,
                                 task.session_id,
                                 entries,
+                                returned_session_id,
                                 &task.video_id,
                                 task.chunk_hash.as_deref(),
                                 &cache,
@@ -355,6 +374,7 @@ impl BufferManager {
         chunk_index: i32,
         task_session_id: u64,
         entries: Vec<TranslationEntry>,
+        returned_session_id: Option<String>,
         video_id: &str,
         chunk_hash: Option<&str>,
         cache: &TranslationCache,
@@ -370,7 +390,12 @@ impl BufferManager {
             .statuses
             .insert(chunk_index, ChunkTranslationStatus::Done);
         state.in_progress = state.in_progress.saturating_sub(1);
-        // 첫 청크 번역 성공 → 세션이 생성되었으므로 이후는 --resume 모드로
+        // Codex의 경우 첫 호출 응답에서 반환된 thread_id를 캡처해
+        // 후속 청크의 resume 인자로 사용 가능하게 한다. Claude는 returned_session_id가 항상 None.
+        if state.backend_session_id.is_none() && returned_session_id.is_some() {
+            state.backend_session_id = returned_session_id;
+        }
+        // 첫 청크 번역 성공 → 세션이 생성되었으므로 이후는 resume 모드로
         state.session_initialized = true;
 
         // 캐시 저장 (실패해도 무시)
@@ -450,8 +475,9 @@ struct SpawnTask {
     chunk_hash: Option<String>,
     retry_count: u32,
     chunk_index: i32,
-    /// Claude CLI 세션 UUID. `None`이면 세션 재사용 비활성 (폴백 모드) — 독립 실행.
-    claude_session_id: Option<String>,
+    backend: TranslationBackend,
+    /// 백엔드 세션 토큰. `None`이면 세션 재사용 비활성(폴백) 또는 Codex의 첫 호출 전.
+    session_token: Option<String>,
     is_first_in_session: bool,
 }
 
@@ -553,13 +579,14 @@ fn apply_error_to_state(
         .insert(chunk_index, ChunkTranslationStatus::Error(new_retry));
     state.in_progress = state.in_progress.saturating_sub(1);
 
-    let error_kind = classify_error(error);
+    let error_kind = state.backend.classify_error(error);
 
     if error_kind == "session_conflict" {
         state.session_reuse_disabled = true;
         eprintln!(
-            "[buffer] 세션 충돌 감지, 영상 나머지 번역을 독립 모드로 폴백 (chunk {})",
-            chunk_index
+            "[buffer] 세션 충돌 감지, 영상 나머지 번역을 독립 모드로 폴백 (chunk {}, backend={})",
+            chunk_index,
+            state.backend.as_str()
         );
     }
 
@@ -572,42 +599,6 @@ fn apply_error_to_state(
     ErrorTransition {
         error_kind,
         retryable,
-    }
-}
-
-/// 에러 메시지에서 종류를 분류 (프론트엔드 UI 분기 + BufferManager 폴백 로직에 사용).
-///
-/// 텍스트 휴리스틱이므로 Claude CLI 출력 변경에 취약함을 인지. 가능한 한 구체적
-/// 패턴을 매칭해 오분류를 줄인다. 특히 `"exceeded"` 단독 매칭은 `context length
-/// exceeded`, `token limit exceeded` 등 rate limit이 아닌 케이스까지 잡으므로 사용 금지.
-fn classify_error(error: &AppError) -> String {
-    let msg = error.to_string().to_lowercase();
-    if msg.contains("session id") && msg.contains("already in use") {
-        // Claude CLI: `Error: Session ID {uuid} is already in use.`
-        return "session_conflict".into();
-    }
-    // rate limit: Claude/Anthropic 주요 표현만 구체 매칭.
-    // `"exceeded"` 단독은 context length 등과 충돌하므로 `"rate limit"`/`"quota"`/
-    // `"usage limit"`/Claude의 `"5-hour"` 정책 문구에 국한.
-    if msg.contains("rate limit")
-        || msg.contains("quota exceeded")
-        || msg.contains("usage limit")
-        || msg.contains("5-hour")
-    {
-        return "rate_limit".into();
-    }
-    if msg.contains("timeout") || msg.contains("타임아웃") {
-        return "timeout".into();
-    }
-    if msg.contains("claude") && (msg.contains("찾을 수 없") || msg.contains("not found")) {
-        return "cli_not_found".into();
-    }
-    match error {
-        AppError::CaptionFetch(_) => "caption_fetch".into(),
-        AppError::Translation(_) => "translation".into(),
-        AppError::Database(_) => "database".into(),
-        AppError::EnvironmentCheck(_) => "environment".into(),
-        AppError::Process(_) => "process".into(),
     }
 }
 
@@ -629,27 +620,35 @@ fn can_spawn_in_state(state: &BufferState, effective_concurrent: usize) -> bool 
     true
 }
 
-/// 단일 청크 번역 실행: 프롬프트 구성 → Claude subprocess → JSONL 파싱 → 검증
+/// 단일 청크 번역 실행: 프롬프트 구성 → 백엔드 subprocess → 백엔드별 텍스트 추출 → 검증.
+///
+/// 반환값의 `Option<String>`은 Codex 첫 호출에서만 `Some(thread_id)` — BufferManager가
+/// 받아 후속 청크의 resume 인자로 사용한다. Claude나 Codex의 이어가기 호출은 `None`.
+#[allow(clippy::too_many_arguments)]
 async fn translate_chunk_internal(
     chunk: &SubtitleChunk,
     video_info: Option<&VideoInfo>,
     previous_context: Option<&[SubtitleLine]>,
     model: Option<&str>,
-    claude_session_id: Option<&str>,
+    backend: TranslationBackend,
+    session_token: Option<&str>,
     is_first_in_session: bool,
-) -> Result<Vec<TranslationEntry>, AppError> {
+) -> Result<(Vec<TranslationEntry>, Option<String>), AppError> {
     let prompt = build_prompt(chunk, video_info, previous_context, is_first_in_session);
-    let raw_output = ClaudeAdapter::execute(ExecuteParams {
-        prompt: &prompt,
-        timeout_secs: 120,
-        model,
-        session_id: claude_session_id,
-        is_first_in_session,
-    })
-    .await?;
-    let json_text = extract_text_from_jsonl(&raw_output)
-        .map_err(|e| AppError::Translation(format!("JSONL 파싱 실패: {}", e)))?;
-    validate_translation(&json_text)
+    let result = backend
+        .execute(ExecuteParams {
+            prompt: &prompt,
+            timeout_secs: 120,
+            model,
+            session_id: session_token,
+            is_first_in_session,
+        })
+        .await?;
+    let json_text = backend
+        .extract_text(&result.raw_output)
+        .map_err(|e| AppError::Translation(format!("출력 파싱 실패: {}", e)))?;
+    let entries = validate_translation(&json_text)?;
+    Ok((entries, result.returned_session_id))
 }
 
 // ── 테스트 ──────────────────────────────────────────
@@ -691,15 +690,16 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
-            claude_session_id: "test-session".into(),
+            backend: TranslationBackend::Claude,
+            backend_session_id: Some("test-session".into()),
             session_initialized: false,
             session_reuse_disabled: false,
             rate_limited_until: None,
         };
 
         let result = get_priority_chunks(&state);
-        // LOOK_AHEAD=6 → offsets 0..=6
-        assert_eq!(result, vec![0, 1, 2, 3, 4, 5, 6]);
+        // LOOK_AHEAD=10 → offsets 0..=10, max_idx=9 → 0..=9
+        assert_eq!(result, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }
 
     #[test]
@@ -722,15 +722,17 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
-            claude_session_id: "test-session".into(),
+            backend: TranslationBackend::Claude,
+            backend_session_id: Some("test-session".into()),
             session_initialized: false,
             session_reuse_disabled: false,
             rate_limited_until: None,
         };
 
         let result = get_priority_chunks(&state);
-        // current_idx=0, LOOK_AHEAD=6 → offsets 0..=6, but 0=Done, 1=Cached skipped
-        assert_eq!(result, vec![2, 3, 4, 5, 6]);
+        // current_idx=0, LOOK_AHEAD=10 → offsets 0..=10 capped at max_idx=9,
+        // 0=Done, 1=Cached skipped
+        assert_eq!(result, vec![2, 3, 4, 5, 6, 7, 8, 9]);
     }
 
     #[test]
@@ -754,14 +756,15 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
-            claude_session_id: "test-session".into(),
+            backend: TranslationBackend::Claude,
+            backend_session_id: Some("test-session".into()),
             session_initialized: false,
             session_reuse_disabled: false,
             rate_limited_until: None,
         };
 
         let result = get_priority_chunks(&state);
-        // LOOK_AHEAD=6 → current_idx(5) + offsets 0..=6 = [5..=11], but max_idx=9
+        // LOOK_AHEAD=10 → current_idx(5) + offsets 0..=10 = [5..=15], but max_idx=9
         assert_eq!(result, vec![5, 6, 7, 8, 9]);
     }
 
@@ -786,7 +789,8 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
-            claude_session_id: "test-session".into(),
+            backend: TranslationBackend::Claude,
+            backend_session_id: Some("test-session".into()),
             session_initialized: false,
             session_reuse_disabled: false,
             rate_limited_until: None,
@@ -816,14 +820,15 @@ mod tests {
             statuses,
             in_progress: 0,
             session_id: 0,
-            claude_session_id: "test-session".into(),
+            backend: TranslationBackend::Claude,
+            backend_session_id: Some("test-session".into()),
             session_initialized: false,
             session_reuse_disabled: false,
             rate_limited_until: None,
         };
 
         let result = get_priority_chunks(&state);
-        // current_idx=0, LOOK_AHEAD=6, max_idx=4 → 0(retry),1(skip),2,3,4
+        // current_idx=0, LOOK_AHEAD=10, max_idx=4 → 0(retry),1(skip),2,3,4
         assert_eq!(result, vec![0, 2, 3, 4]);
     }
 
@@ -867,69 +872,8 @@ mod tests {
         assert_eq!(ctx.unwrap().len(), 1);
     }
 
-    #[test]
-    fn test_classify_error_rate_limit() {
-        let err = AppError::Process("Claude rate limit exceeded".into());
-        assert_eq!(classify_error(&err), "rate_limit");
-    }
-
-    #[test]
-    fn test_classify_error_rate_limit_variants() {
-        // quota / usage limit / 5-hour 변형 모두 rate_limit으로 잡혀야 함
-        let err1 = AppError::Process("quota exceeded for this model".into());
-        assert_eq!(classify_error(&err1), "rate_limit");
-        let err2 = AppError::Process("monthly usage limit reached".into());
-        assert_eq!(classify_error(&err2), "rate_limit");
-        let err3 = AppError::Process("5-hour limit hit".into());
-        assert_eq!(classify_error(&err3), "rate_limit");
-    }
-
-    #[test]
-    fn test_classify_error_context_length_not_rate_limit() {
-        // "exceeded"가 들어가지만 rate_limit은 아닌 케이스 — 오분류 없어야 함
-        let err = AppError::Process("context length exceeded".into());
-        assert_ne!(classify_error(&err), "rate_limit");
-        let err2 = AppError::Process("maximum token limit exceeded".into());
-        assert_ne!(classify_error(&err2), "rate_limit");
-    }
-
-    #[test]
-    fn test_classify_error_timeout() {
-        let err = AppError::Process("Claude 응답 타임아웃 (120초)".into());
-        assert_eq!(classify_error(&err), "timeout");
-    }
-
-    #[test]
-    fn test_classify_error_generic() {
-        let err = AppError::Translation("파싱 실패".into());
-        assert_eq!(classify_error(&err), "translation");
-    }
-
-    #[test]
-    fn test_classify_error_session_conflict() {
-        let err = AppError::Process(
-            "Claude 프로세스 비정상 종료 (코드: Some(1)): \
-             Error: Session ID c78bf130-fd78-45d2-bdb2-ee002fcece2e is already in use."
-                .into(),
-        );
-        assert_eq!(classify_error(&err), "session_conflict");
-    }
-
-    #[test]
-    fn test_classify_error_session_conflict_case_insensitive() {
-        let err = AppError::Process("SESSION ID abc IS ALREADY IN USE".into());
-        assert_eq!(classify_error(&err), "session_conflict");
-    }
-
-    #[test]
-    fn test_classify_error_session_conflict_not_overmatched() {
-        // "session" 만 있다고 session_conflict 로 잡히면 안 됨
-        let err = AppError::Process("some session-related issue, not a conflict".into());
-        assert_ne!(classify_error(&err), "session_conflict");
-        // "already in use"만 있어도 마찬가지
-        let err2 = AppError::Process("port is already in use".into());
-        assert_ne!(classify_error(&err2), "session_conflict");
-    }
+    // classify_error 테스트들은 claude::adapter::tests로 이전됨 (백엔드별 분류기).
+    // BufferManager는 `state.backend.classify_error()`로 위임만 한다.
 
     fn make_state_for_spawn(
         chunks: Vec<SubtitleChunk>,
@@ -951,7 +895,8 @@ mod tests {
             statuses,
             in_progress,
             session_id: 0,
-            claude_session_id: "test-session".into(),
+            backend: TranslationBackend::Claude,
+            backend_session_id: Some("test-session".into()),
             session_initialized,
             session_reuse_disabled,
             rate_limited_until: None,
@@ -1014,7 +959,8 @@ mod tests {
             statuses,
             in_progress: 1, // 첫 청크 InProgress 가정
             session_id: 0,
-            claude_session_id: "test-session".into(),
+            backend: TranslationBackend::Claude,
+            backend_session_id: Some("test-session".into()),
             session_initialized: false,
             session_reuse_disabled: false,
             rate_limited_until: None,
@@ -1116,8 +1062,15 @@ mod tests {
     #[tokio::test]
     async fn test_handle_error_session_conflict_disables_reuse_via_manager() {
         let mgr = BufferManager::new();
-        mgr.init("vid1".into(), make_chunks(3), None, vec![], None)
-            .await;
+        mgr.init(
+            "vid1".into(),
+            make_chunks(3),
+            None,
+            vec![],
+            None,
+            TranslationBackend::Claude,
+        )
+        .await;
         {
             let mut lock = mgr.state.lock().await;
             let state = lock.as_mut().unwrap();
@@ -1149,8 +1102,15 @@ mod tests {
     #[tokio::test]
     async fn test_handle_error_generic_keeps_session_reuse_via_manager() {
         let mgr = BufferManager::new();
-        mgr.init("vid1".into(), make_chunks(3), None, vec![], None)
-            .await;
+        mgr.init(
+            "vid1".into(),
+            make_chunks(3),
+            None,
+            vec![],
+            None,
+            TranslationBackend::Claude,
+        )
+        .await;
         {
             let mut lock = mgr.state.lock().await;
             let state = lock.as_mut().unwrap();
@@ -1179,7 +1139,15 @@ mod tests {
         let mgr = BufferManager::new();
         let chunks = make_chunks(3);
 
-        mgr.init("vid1".into(), chunks, None, vec![1], None).await;
+        mgr.init(
+            "vid1".into(),
+            chunks,
+            None,
+            vec![1],
+            None,
+            TranslationBackend::Claude,
+        )
+        .await;
 
         let lock = mgr.state.lock().await;
         let state = lock.as_ref().unwrap();
@@ -1192,10 +1160,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_init_claude_pre_generates_session_uuid() {
+        // Claude는 클라이언트가 UUID를 미리 생성해 첫 호출에 넘기는 모델 — init 직후 Some이어야 함.
+        let mgr = BufferManager::new();
+        mgr.init(
+            "vid1".into(),
+            make_chunks(2),
+            None,
+            vec![],
+            None,
+            TranslationBackend::Claude,
+        )
+        .await;
+        let lock = mgr.state.lock().await;
+        let state = lock.as_ref().unwrap();
+        assert!(state.backend_session_id.is_some());
+        let id = state.backend_session_id.as_deref().unwrap();
+        // UUID v4 길이는 36자
+        assert_eq!(id.len(), 36);
+    }
+
+    #[tokio::test]
+    async fn test_init_codex_starts_without_session_id() {
+        // Codex는 서버가 첫 응답의 session_configured 이벤트로 thread_id를 알려주므로
+        // init 시점엔 None이어야 한다. handle_completion에서 처음 채워진다.
+        let mgr = BufferManager::new();
+        mgr.init(
+            "vid1".into(),
+            make_chunks(2),
+            None,
+            vec![],
+            None,
+            TranslationBackend::Codex,
+        )
+        .await;
+        let lock = mgr.state.lock().await;
+        let state = lock.as_ref().unwrap();
+        assert!(state.backend_session_id.is_none());
+        assert_eq!(state.backend, TranslationBackend::Codex);
+    }
+
+    #[tokio::test]
     async fn test_cancel_clears_state() {
         let mgr = BufferManager::new();
-        mgr.init("vid1".into(), make_chunks(3), None, vec![], None)
-            .await;
+        mgr.init(
+            "vid1".into(),
+            make_chunks(3),
+            None,
+            vec![],
+            None,
+            TranslationBackend::Claude,
+        )
+        .await;
 
         mgr.cancel().await;
 
@@ -1206,8 +1222,15 @@ mod tests {
     #[tokio::test]
     async fn test_seek_resets_in_progress() {
         let mgr = BufferManager::new();
-        mgr.init("vid1".into(), make_chunks(5), None, vec![], None)
-            .await;
+        mgr.init(
+            "vid1".into(),
+            make_chunks(5),
+            None,
+            vec![],
+            None,
+            TranslationBackend::Claude,
+        )
+        .await;
 
         {
             let mut lock = mgr.state.lock().await;

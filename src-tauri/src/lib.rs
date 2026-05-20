@@ -1,6 +1,8 @@
+pub mod backend;
 pub mod buffer_manager;
 pub mod cache;
 pub mod claude;
+pub mod codex;
 pub mod error;
 pub mod subtitle;
 pub mod translate;
@@ -9,22 +11,31 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
 
+use backend::{ExecuteParams, TranslationBackend};
 use buffer_manager::BufferManager;
 use cache::{compute_chunk_hash, TranslationCache};
 use error::AppError;
 use subtitle::chunk::split_into_chunks;
 use subtitle::fetch;
 use subtitle::{SubtitleChunk, SubtitleLine};
-use translate::jsonl_parser::extract_text_from_jsonl;
 use translate::prompt::build_prompt;
 use translate::validator::validate_translation;
 use translate::{TranslationEntry, VideoInfo};
 
-/// Claude CLI 환경 검증
+/// 백엔드 CLI 환경 검증.
+///
+/// `backend`가 `None`이면 기본값 `claude`로 검증 (Home 진입 직후 등).
 #[tauri::command]
-async fn check_environment() -> Result<String, AppError> {
-    claude::adapter::ClaudeAdapter::test_environment().await?;
-    Ok("Claude CLI가 정상적으로 설치되어 있습니다".into())
+async fn check_environment(backend: Option<String>) -> Result<String, AppError> {
+    let backend = TranslationBackend::from_str(backend.as_deref().unwrap_or("claude"));
+    backend.test_environment().await?;
+    Ok(format!(
+        "{} CLI가 정상적으로 설치되어 있습니다",
+        match backend {
+            TranslationBackend::Claude => "Claude",
+            TranslationBackend::Codex => "Codex",
+        }
+    ))
 }
 
 /// YouTube 영상 자막 fetch + 파싱 + 청크 분할
@@ -41,17 +52,20 @@ async fn fetch_video_info(video_id: String) -> Result<VideoInfo, AppError> {
     fetch::fetch_video_info(&video_id).await
 }
 
-/// 단일 청크 번역: 프롬프트 구성 → Claude 실행 → JSONL 파싱 → 검증
+/// 단일 청크 번역: 프롬프트 구성 → 백엔드 실행 → 백엔드별 텍스트 추출 → 검증.
 ///
 /// 이 커맨드는 BufferManager를 거치지 않는 독립 호출용 (브라우저 mock 폴백 등).
-/// 세션 재사용은 BufferManager 경로에서만 적용된다.
+/// 세션 재사용은 BufferManager 경로에서만 적용된다. `backend`가 `None`이면 기본값 `claude`.
 #[tauri::command]
 async fn translate_chunk(
     chunk: SubtitleChunk,
     video_info: Option<VideoInfo>,
     previous_context: Option<Vec<SubtitleLine>>,
     model: Option<String>,
+    backend: Option<String>,
 ) -> Result<Vec<TranslationEntry>, AppError> {
+    let backend = TranslationBackend::from_str(backend.as_deref().unwrap_or("claude"));
+
     // 세션 재사용 없이 독립 실행 = 첫 호출 모드 (시스템 지시 + 영상 설명 포함).
     let prompt = build_prompt(
         &chunk,
@@ -60,17 +74,19 @@ async fn translate_chunk(
         true,
     );
 
-    let raw_output = claude::adapter::ClaudeAdapter::execute(claude::adapter::ExecuteParams {
-        prompt: &prompt,
-        timeout_secs: 120,
-        model: model.as_deref(),
-        session_id: None,
-        is_first_in_session: true,
-    })
-    .await?;
+    let result = backend
+        .execute(ExecuteParams {
+            prompt: &prompt,
+            timeout_secs: 120,
+            model: model.as_deref(),
+            session_id: None,
+            is_first_in_session: true,
+        })
+        .await?;
 
-    let json_text = extract_text_from_jsonl(&raw_output)
-        .map_err(|e| AppError::Translation(format!("JSONL 파싱 실패: {}", e)))?;
+    let json_text = backend
+        .extract_text(&result.raw_output)
+        .map_err(|e| AppError::Translation(format!("출력 파싱 실패: {}", e)))?;
 
     let entries = validate_translation(&json_text)?;
 
@@ -118,7 +134,7 @@ fn get_chunk_hash(lines: Vec<SubtitleLine>) -> String {
 
 // ── 버퍼 매니저 커맨드 ──────────────────────────────
 
-/// 새 영상의 버퍼 매니저를 초기화
+/// 새 영상의 버퍼 매니저를 초기화. `backend`가 `None`이면 기본값 `claude`.
 #[tauri::command]
 async fn init_buffer(
     video_id: String,
@@ -126,10 +142,12 @@ async fn init_buffer(
     video_info: Option<VideoInfo>,
     cached_indices: Vec<i32>,
     model: Option<String>,
+    backend: Option<String>,
     buffer: tauri::State<'_, Arc<BufferManager>>,
 ) -> Result<(), AppError> {
+    let backend = TranslationBackend::from_str(backend.as_deref().unwrap_or("claude"));
     buffer
-        .init(video_id, chunks, video_info, cached_indices, model)
+        .init(video_id, chunks, video_info, cached_indices, model, backend)
         .await;
     Ok(())
 }

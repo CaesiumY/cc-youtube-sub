@@ -109,7 +109,8 @@ async fn main() {
     )
     .await
     {
-        Ok(raw_output) => {
+        Ok(result) => {
+            let raw_output = result.raw_output;
             println!("  ✅ Claude 응답 수신 ({} bytes)", raw_output.len());
 
             match extract_text_from_jsonl(&raw_output) {

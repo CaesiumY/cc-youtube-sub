@@ -11,7 +11,7 @@ import {
   translateChunk,
 } from "../lib/tauri-commands";
 import type { SubtitleChunk, SubtitleLine } from "../lib/tauri-commands";
-import { useSettingsStore } from "../stores/settings-store";
+import { getActiveModel, useSettingsStore } from "../stores/settings-store";
 import { useTranslationStore } from "../stores/translation-store";
 
 const MAX_CONCURRENT = 2;
@@ -81,12 +81,14 @@ export function useTranslationPipeline(videoId: string) {
       // 이전 청크의 마지막 5줄을 context로 전달
       const prevContext = getPreviousContext(chunks, nextChunk.index);
 
-      const { selectedModel } = useSettingsStore.getState();
+      const settings = useSettingsStore.getState();
+      const activeModel = getActiveModel(settings);
       const entries = await translateChunk(
         nextChunk,
         nextChunk.index === 0 ? (videoInfo ?? undefined) : undefined,
         prevContext,
-        selectedModel,
+        activeModel,
+        settings.backend,
       );
 
       // 세션이 바뀌었으면 결과 폐기
@@ -167,13 +169,15 @@ export function useTranslationPipeline(videoId: string) {
 
       if (isTauri()) {
         // Phase 3: Rust 버퍼 매니저가 재생 위치 기반 번역 스케줄링
-        const { selectedModel } = useSettingsStore.getState();
+        const settings = useSettingsStore.getState();
+        const activeModel = getActiveModel(settings);
         await initBuffer(
           videoId,
           chunks,
           videoInfo ?? null,
           cachedIndices,
-          selectedModel,
+          activeModel,
+          settings.backend,
         );
       } else {
         // 브라우저 개발 모드: 기존 프론트엔드 큐

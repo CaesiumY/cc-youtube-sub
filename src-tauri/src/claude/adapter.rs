@@ -2,7 +2,12 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use crate::backend::ExecuteResult;
 use crate::error::AppError;
+
+// ExecuteParams의 단일 정의는 `crate::backend`에 있다. `claude::adapter::ExecuteParams` 경로로
+// 임포트하던 호출자가 그대로 동작하도록 재공개 (모듈 내부에서도 이름 ExecuteParams로 접근 가능).
+pub use crate::backend::ExecuteParams;
 
 /// 에러 메시지 prefix — 프론트엔드에서 에러 종류를 구분하는 데 사용
 const ERR_NOT_INSTALLED: &str = "NOT_INSTALLED";
@@ -41,31 +46,6 @@ fn build_claude_command(args: &[&str]) -> Command {
 
 /// 허용된 모델 alias 목록 — IPC 경계에서의 입력 검증용
 const ALLOWED_MODELS: &[&str] = &["haiku", "sonnet"];
-
-/// `ClaudeAdapter::execute` 호출 파라미터.
-///
-/// 인자가 많아 (`prompt`, `timeout_secs`, `model`, `session_id`, `is_first_in_session`)
-/// positional 호출이 혼란스럽고 clippy `too_many_arguments` 경고 위험이 있으므로 struct로
-/// 묶는다. 호출측은 struct literal로 의미를 명시:
-///
-/// ```rust,ignore
-/// ClaudeAdapter::execute(ExecuteParams {
-///     prompt: &prompt,
-///     timeout_secs: 120,
-///     model: Some("haiku"),
-///     session_id: Some(&uuid),
-///     is_first_in_session: true,
-/// }).await
-/// ```
-pub struct ExecuteParams<'a> {
-    pub prompt: &'a str,
-    pub timeout_secs: u64,
-    pub model: Option<&'a str>,
-    /// `Some(uuid)`이면 세션 재사용. `None`이면 독립 실행 (세션 플래그 미사용).
-    pub session_id: Option<&'a str>,
-    /// `true`: 새 세션 생성 또는 독립 실행 (풀 프롬프트). `false`: 기존 세션 resume.
-    pub is_first_in_session: bool,
-}
 
 /// Claude CLI 환경 검증 및 실행을 담당하는 어댑터
 ///
@@ -133,7 +113,7 @@ impl ClaudeAdapter {
     ///   - `is_first_in_session = false` → `--resume <uuid> --fork-session`으로
     ///     부모 세션의 맥락은 계승하면서 fork된 세션에 기록 (동시 호출 충돌 회피)
     /// - `CLAUDECODE` 환경변수 제거: Paperclip 패턴 (재귀 방지)
-    pub async fn execute(params: ExecuteParams<'_>) -> Result<String, AppError> {
+    pub async fn execute(params: ExecuteParams<'_>) -> Result<ExecuteResult, AppError> {
         let ExecuteParams {
             prompt,
             timeout_secs,
@@ -216,7 +196,12 @@ impl ClaudeAdapter {
             ));
         }
 
-        Ok(stdout)
+        // Claude는 클라이언트가 UUID를 미리 생성해 세션 ID로 넘기는 모델이므로
+        // adapter는 새로 발급할 세션 ID가 없다 — 항상 None.
+        Ok(ExecuteResult {
+            raw_output: stdout,
+            returned_session_id: None,
+        })
     }
 
     /// 실행 중인 Claude 프로세스를 종료 (graceful shutdown)
@@ -228,5 +213,105 @@ impl ClaudeAdapter {
             .await
             .map_err(|e| AppError::Process(format!("Claude 프로세스 종료 실패: {}", e)))?;
         Ok(())
+    }
+}
+
+/// Claude 에러 메시지에서 종류를 분류 (BufferManager의 폴백 로직 + 프론트엔드 UI 분기에 사용).
+///
+/// 텍스트 휴리스틱이므로 Claude CLI 출력 변경에 취약함을 인지. 가능한 한 구체적 패턴을
+/// 매칭해 오분류를 줄인다. 특히 `"exceeded"` 단독 매칭은 `context length exceeded`,
+/// `token limit exceeded` 등 rate limit이 아닌 케이스까지 잡으므로 사용 금지.
+pub fn classify_claude_error(error: &AppError) -> String {
+    let msg = error.to_string().to_lowercase();
+    if msg.contains("session id") && msg.contains("already in use") {
+        // Claude CLI: `Error: Session ID {uuid} is already in use.`
+        return "session_conflict".into();
+    }
+    // rate limit: Claude/Anthropic 주요 표현만 구체 매칭.
+    if msg.contains("rate limit")
+        || msg.contains("quota exceeded")
+        || msg.contains("usage limit")
+        || msg.contains("5-hour")
+    {
+        return "rate_limit".into();
+    }
+    if msg.contains("timeout") || msg.contains("타임아웃") {
+        return "timeout".into();
+    }
+    if msg.contains("claude") && (msg.contains("찾을 수 없") || msg.contains("not found")) {
+        return "cli_not_found".into();
+    }
+    match error {
+        AppError::CaptionFetch(_) => "caption_fetch".into(),
+        AppError::Translation(_) => "translation".into(),
+        AppError::Database(_) => "database".into(),
+        AppError::EnvironmentCheck(_) => "environment".into(),
+        AppError::Process(_) => "process".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_rate_limit() {
+        let err = AppError::Process("Claude rate limit exceeded".into());
+        assert_eq!(classify_claude_error(&err), "rate_limit");
+    }
+
+    #[test]
+    fn classify_rate_limit_variants() {
+        let err1 = AppError::Process("quota exceeded for this model".into());
+        assert_eq!(classify_claude_error(&err1), "rate_limit");
+        let err2 = AppError::Process("monthly usage limit reached".into());
+        assert_eq!(classify_claude_error(&err2), "rate_limit");
+        let err3 = AppError::Process("5-hour limit hit".into());
+        assert_eq!(classify_claude_error(&err3), "rate_limit");
+    }
+
+    #[test]
+    fn classify_context_length_not_rate_limit() {
+        // 회귀 방지: "exceeded" 단독 매칭은 오분류 위험
+        let err = AppError::Process("context length exceeded".into());
+        assert_ne!(classify_claude_error(&err), "rate_limit");
+        let err2 = AppError::Process("maximum token limit exceeded".into());
+        assert_ne!(classify_claude_error(&err2), "rate_limit");
+    }
+
+    #[test]
+    fn classify_timeout() {
+        let err = AppError::Process("Claude 응답 타임아웃 (120초)".into());
+        assert_eq!(classify_claude_error(&err), "timeout");
+    }
+
+    #[test]
+    fn classify_generic_translation() {
+        let err = AppError::Translation("파싱 실패".into());
+        assert_eq!(classify_claude_error(&err), "translation");
+    }
+
+    #[test]
+    fn classify_session_conflict() {
+        let err = AppError::Process(
+            "Claude 프로세스 비정상 종료 (코드: Some(1)): \
+             Error: Session ID c78bf130-fd78-45d2-bdb2-ee002fcece2e is already in use."
+                .into(),
+        );
+        assert_eq!(classify_claude_error(&err), "session_conflict");
+    }
+
+    #[test]
+    fn classify_session_conflict_case_insensitive() {
+        let err = AppError::Process("SESSION ID abc IS ALREADY IN USE".into());
+        assert_eq!(classify_claude_error(&err), "session_conflict");
+    }
+
+    #[test]
+    fn classify_session_conflict_not_overmatched() {
+        let err = AppError::Process("some session-related issue, not a conflict".into());
+        assert_ne!(classify_claude_error(&err), "session_conflict");
+        let err2 = AppError::Process("port is already in use".into());
+        assert_ne!(classify_claude_error(&err2), "session_conflict");
     }
 }

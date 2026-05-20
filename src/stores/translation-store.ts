@@ -84,6 +84,13 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
 
   setVideoInfo: (info) => set({ videoInfo: info }),
 
+  // 청크 상태를 갱신하고 진행률 카운터를 추적한다.
+  //
+  // `isLoading`은 의도적으로 건드리지 않는다. `isLoading`은 "초기 로딩"(자막 fetch ~
+  // 첫 번역 자막 도착)만을 의미하며, BufferManager는 재생 위치 기준 LOOK_AHEAD 청크만
+  // lazy 번역하므로 "모든 청크 완료" 같은 전역 조건으로 로딩을 판정할 수 없다. 재생 중
+  // "아직 번역 안 된 구간" 판정은 subtitle-overlay가 현재 재생 위치의 청크 status로
+  // 파생 계산한다.
   markChunkStatus: (index, status) => {
     const { chunkStatuses, completedChunks, cachedChunks } = get();
     const prev = chunkStatuses[index];
@@ -95,17 +102,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
       completedChunks:
         !wasDone && isDone ? completedChunks + 1 : completedChunks,
       cachedChunks: status === "cached" ? cachedChunks + 1 : cachedChunks,
-      isLoading: true,
     });
-
-    // 모든 청크 완료 시 isLoading 해제
-    const updated = { ...chunkStatuses, [index]: status };
-    const allDone = Object.values(updated).every(
-      (s) => s === "done" || s === "cached" || s === "error",
-    );
-    if (allDone) {
-      set({ isLoading: false });
-    }
   },
 
   addTranslations: (entries) => {
@@ -116,7 +113,14 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
     const merged = [...translations, ...newEntries].sort(
       (a, b) => a.start - b.start,
     );
-    set({ translations: merged });
+    // 첫 번역 자막이 도착하면 초기 로딩 종료. 이후 markChunkStatus는 isLoading을
+    // 다시 켜지 않으므로, 재생 중 로딩 표시는 subtitle-overlay의 파생 상태가 담당한다.
+    const wasEmpty = translations.length === 0;
+    set(
+      wasEmpty && merged.length > 0
+        ? { translations: merged, isLoading: false }
+        : { translations: merged },
+    );
   },
 
   setError: (error) => set({ error, isLoading: false }),

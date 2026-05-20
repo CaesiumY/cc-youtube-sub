@@ -47,6 +47,8 @@ export function SubtitleOverlay() {
   const translations = useTranslationStore((s) => s.translations);
   const isLoading = useTranslationStore((s) => s.isLoading);
   const totalChunks = useTranslationStore((s) => s.totalChunks);
+  const chunks = useTranslationStore((s) => s.chunks);
+  const chunkStatuses = useTranslationStore((s) => s.chunkStatuses);
   const error = useTranslationStore((s) => s.error);
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -72,6 +74,25 @@ export function SubtitleOverlay() {
       }),
     [translations, currentTime],
   );
+
+  // 재생 중 로딩 판정: 지금 재생 위치의 청크가 아직 번역되지 않았는가.
+  //
+  // 전역 `isLoading`은 "초기 로딩"(첫 자막 도착 전)만 의미한다. BufferManager는
+  // 재생 위치 기준 일부 청크만 lazy 번역하므로, 영상 뒷부분 미번역 구간을 재생할 때의
+  // 로딩은 현재 청크 status로 직접 판정해야 한다. 어느 청크에도 속하지 않으면(자막
+  // 없는 영상 끝 등) 로딩을 띄우지 않는다.
+  const isCurrentChunkLoading = useMemo(() => {
+    if (chunks.length === 0) return false;
+    const chunk = chunks.find(
+      (c) => currentTime >= c.start_time && currentTime < c.end_time,
+    );
+    if (!chunk) return false;
+    const status = chunkStatuses[chunk.index];
+    return status === "pending" || status === "translating";
+  }, [chunks, chunkStatuses, currentTime]);
+
+  // 초기 로딩(첫 자막 준비 전) 또는 현재 청크 미번역이면 로딩 표시.
+  const showLoading = isLoading || isCurrentChunkLoading;
 
   const scale = computeScale(containerWidth);
   const translatedFontPx = 16 * subtitleSize * scale;
@@ -140,7 +161,7 @@ export function SubtitleOverlay() {
           >
             <p className="text-center text-sm text-red-200">{error}</p>
           </motion.div>
-        ) : isLoading ? (
+        ) : showLoading ? (
           <motion.div
             key="loading"
             initial={{ opacity: 0 }}
