@@ -12,6 +12,7 @@ import { useTranslationPipeline } from "../hooks/use-translation-pipeline";
 import type { AppError, EnvErrorKind } from "../lib/tauri-commands";
 import { checkEnvironment, isTauri } from "../lib/tauri-commands";
 import { usePlayerStore } from "../stores/player-store";
+import { useSettingsStore } from "../stores/settings-store";
 
 type EnvError = { kind: EnvErrorKind };
 
@@ -22,34 +23,38 @@ export function PlayerView() {
   const playerState = usePlayerStore((s) => s.playerState);
   const playerRef = useRef<YT.Player | null>(null);
   const [envError, setEnvError] = useState<EnvError | null>(null);
+  const backend = useSettingsStore((s) => s.backend);
 
-  // Claude CLI 환경 검증 (Tauri 환경에서만)
+  // 백엔드 CLI 환경 검증 (Tauri 환경에서만). 외부 링크로 Watch에 직접 진입하는 케이스
+  // 대비 — Home에서 이미 검증을 통과한 사용자도 같은 백엔드면 즉시 통과한다.
   useEffect(() => {
     if (!isTauri()) return;
-    checkEnvironment().catch((err: unknown) => {
-      // Tauri IPC 에러가 string으로 올 수 있으므로 방어적 파싱
-      let parsed: unknown;
-      try {
-        parsed = typeof err === "string" ? JSON.parse(err) : err;
-      } catch {
-        parsed = err;
-      }
-      const appErr = parsed as AppError | undefined;
-      if (appErr?.kind === "EnvironmentCheck") {
-        if (appErr.message?.startsWith("NOT_INSTALLED")) {
-          setEnvError({ kind: "not_installed" });
-        } else {
-          setEnvError({ kind: "execution_failed" });
+    checkEnvironment(backend)
+      .then(() => setEnvError(null))
+      .catch((err: unknown) => {
+        // Tauri IPC 에러가 string으로 올 수 있으므로 방어적 파싱
+        let parsed: unknown;
+        try {
+          parsed = typeof err === "string" ? JSON.parse(err) : err;
+        } catch {
+          parsed = err;
         }
-      } else {
-        // EnvironmentCheck가 아닌 에러는 모달을 띄우지 않고 콘솔에만 기록
-        console.error(
-          "[PlayerView] unexpected error from checkEnvironment:",
-          parsed,
-        );
-      }
-    });
-  }, []);
+        const appErr = parsed as AppError | undefined;
+        if (appErr?.kind === "EnvironmentCheck") {
+          if (appErr.message?.startsWith("NOT_INSTALLED")) {
+            setEnvError({ kind: "not_installed" });
+          } else {
+            setEnvError({ kind: "execution_failed" });
+          }
+        } else {
+          // EnvironmentCheck가 아닌 에러는 모달을 띄우지 않고 콘솔에만 기록
+          console.error(
+            "[PlayerView] unexpected error from checkEnvironment:",
+            parsed,
+          );
+        }
+      });
+  }, [backend]);
 
   // 핵심 훅
   useFullscreen();
@@ -97,8 +102,12 @@ export function PlayerView() {
           {pipeline.error && <span className="text-red-400"> | ERR</span>}
         </div>
       )}
-      {/* CLI 환경 에러 모달 */}
-      <ErrorModal open={envError !== null} errorKind={envError?.kind} />
+      {/* CLI 환경 에러 모달 — 현재 선택된 백엔드에 맞는 안내 표시 */}
+      <ErrorModal
+        open={envError !== null}
+        errorKind={envError?.kind}
+        backend={backend}
+      />
     </div>
   );
 }

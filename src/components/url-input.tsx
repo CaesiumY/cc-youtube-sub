@@ -4,7 +4,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "../lib/utils";
 import { extractVideoId } from "../lib/youtube-url";
 
-export function UrlInput() {
+interface UrlInputProps {
+  /**
+   * true이면 입력 필드를 비활성화하고 Enter/Paste/글로벌 paste로 영상 진입을 막는다.
+   * Home에서 백엔드 CLI 미설치를 감지했을 때 사용.
+   */
+  disabled?: boolean;
+  /** 비활성 사유 표시용 placeholder 오버라이드 (예: "환경 확인 중..."). */
+  placeholderOverride?: string;
+}
+
+export function UrlInput({
+  disabled = false,
+  placeholderOverride,
+}: UrlInputProps = {}) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -12,6 +25,7 @@ export function UrlInput() {
 
   const handleSubmit = useCallback(
     (input: string) => {
+      if (disabled) return;
       const videoId = extractVideoId(input);
       if (videoId) {
         setError(null);
@@ -20,7 +34,7 @@ export function UrlInput() {
         setError("올바른 YouTube URL을 입력해주세요");
       }
     },
-    [navigate],
+    [navigate, disabled],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -30,6 +44,7 @@ export function UrlInput() {
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    if (disabled) return;
     const pasted = e.clipboardData.getData("text");
     // 붙여넣기 시 자동 제출 시도
     const videoId = extractVideoId(pasted);
@@ -42,6 +57,7 @@ export function UrlInput() {
 
   // Cmd/Ctrl+V 글로벌 붙여넣기 감지 (입력 필드에 포커스가 없어도)
   useEffect(() => {
+    if (disabled) return; // 비활성 상태에선 글로벌 paste 핸들러도 비활성화
     const handleGlobalPaste = (e: ClipboardEvent) => {
       if (document.activeElement === inputRef.current) return; // 이미 입력 필드에 포커스
       const pasted = e.clipboardData?.getData("text");
@@ -54,7 +70,7 @@ export function UrlInput() {
     };
     window.addEventListener("paste", handleGlobalPaste);
     return () => window.removeEventListener("paste", handleGlobalPaste);
-  }, [navigate]);
+  }, [navigate, disabled]);
 
   // 자동 포커스
   useEffect(() => {
@@ -78,12 +94,14 @@ export function UrlInput() {
           }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder="YouTube URL을 붙여넣으세요..."
+          placeholder={placeholderOverride ?? "YouTube URL을 붙여넣으세요..."}
+          disabled={disabled}
           className={cn(
             "w-full rounded-2xl border bg-card py-4 pr-4 pl-11 text-base text-foreground outline-none transition-all",
             "placeholder:text-muted-foreground",
             "focus:ring-2 focus:ring-ring",
             error ? "border-destructive" : "border-input",
+            disabled && "cursor-not-allowed opacity-60",
           )}
           spellCheck={false}
           autoComplete="off"

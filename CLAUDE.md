@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-YouTube 영상의 자막을 Claude AI(subprocess)로 실시간 번역하는 Tauri v2 데스크톱 앱. Claude Code CLI 구독만으로 추가 API 비용 없이 동작한다.
+YouTube 영상의 자막을 Claude Code CLI 또는 OpenAI Codex CLI(subprocess)로 실시간 번역하는 Tauri v2 데스크톱 앱. 두 CLI 모두 구독 로그인만으로 추가 API 비용 없이 동작하며, 사용자가 홈 화면에서 번역 백엔드를 선택한다.
 
 ## Commands
 
@@ -45,17 +45,19 @@ cd src-tauri && cargo clippy
 
 ### Backend (`src-tauri/src/`)
 - **lib.rs** : 12개 Tauri command 등록 (진입점)
+- **backend.rs** : `TranslationBackend` enum (Claude/Codex) — 두 어댑터를 enum match로 dispatch, 공유 `ExecuteParams`/`ExecuteResult` 정의
 - **subtitle/** : `fetch.rs` (yt-transcript-rs) → `parser.rs` (XML 파싱) → `chunk.rs` (30초~1분 청크 분할)
-- **translate/** : `prompt.rs` (프롬프트 빌드) → `validator.rs` (JSON 검증) → `jsonl_parser.rs` (스트림 파싱)
+- **translate/** : `prompt.rs` (프롬프트 빌드) → `validator.rs` (JSON 검증) → `jsonl_parser.rs` (Claude stream-json 파싱) / `codex_event_parser.rs` (Codex `--json` NDJSON 파싱)
 - **claude/adapter.rs** : Claude CLI subprocess 실행 (`claude --print - --output-format stream-json`), Windows에서 `CREATE_NO_WINDOW` 플래그 사용
-- **cache.rs** : SQLite(WAL 모드), `(video_id, chunk_hash)` 유니크 키
+- **codex/adapter.rs** : Codex CLI subprocess 실행 (`codex exec --json --sandbox read-only`), 매 청크 독립 호출
+- **cache.rs** : SQLite(WAL 모드), `(video_id, chunk_hash)` 유니크 키 — 백엔드 무관하게 공유
 - **buffer_manager.rs** : 재생 위치 기반 사전 번역 스케줄링, `subtitle-update` 이벤트 emit
 - **error.rs** : `AppError` enum (thiserror), 프론트엔드에 `{ kind, message }` JSON 직렬화
 
 ### Key Data Flow
 1. URL 입력 → `fetch_subtitles` (자막 fetch + 청크 분할)
 2. `batch_query_cache` → 캐시 히트는 즉시 표시, 미스는 번역 큐에 추가
-3. `translate_chunk` → 프롬프트 빌드 → Claude subprocess → JSONL 파싱 → 검증 → 캐시 저장
+3. `translate_chunk` → 프롬프트 빌드 → 선택한 백엔드 subprocess(Claude/Codex) → 백엔드별 출력 파싱 → 검증 → 캐시 저장
 4. Phase 3: `init_buffer` → Rust BufferManager가 재생 위치 앞 청크를 미리 번역
 
 ### IPC Boundary (`src/lib/tauri-commands.ts`)
@@ -78,5 +80,5 @@ cd src-tauri && cargo clippy
 전역 라우팅 규칙은 `~/.claude/CLAUDE.md`의 `gstack + superpowers routing` 섹션을 따른다. 이 프로젝트 특화 추가 제약:
 
 - **`/qa` 범위**: Playwright Chromium은 Tauri 네이티브 윈도우에 접근 불가. `/qa`는 `pnpm dev` (Vite dev server + `mock-tauri` 폴백)로 띄운 프론트엔드 부분에만 적용 가능. Rust 백엔드와 IPC 경유 플로우는 `cargo test` 또는 수동 테스트로 대체.
-- **`/ship` 전 `/cso`**: Claude CLI subprocess 실행 + 외부 URL fetch + SQLite 영속화 조합으로 공격 표면이 작지 않음. `translate/`나 `claude/adapter.rs` 수정 시 `/cso daily` 권장 (프롬프트 인젝션 경계 확인).
+- **`/ship` 전 `/cso`**: CLI subprocess 실행 + 외부 URL fetch + SQLite 영속화 조합으로 공격 표면이 작지 않음. `translate/`, `claude/adapter.rs`, `codex/adapter.rs` 수정 시 `/cso daily` 권장 (프롬프트 인젝션 경계 확인).
 - **`/plan-eng-review` 중점 대상**: `buffer_manager.rs`(재생 위치 기반 상태 전이) 또는 `subtitle/` 파이프라인(fetch → parse → chunk → translate 데이터 흐름) 변경 시 시퀀스/상태 다이어그램 요구.
