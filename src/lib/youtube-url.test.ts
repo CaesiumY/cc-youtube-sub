@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { extractVideoId, isValidYouTubeUrl } from "./youtube-url";
+import {
+  extractVideoId,
+  getThumbnailUrl,
+  isValidYouTubeUrl,
+} from "./youtube-url";
 
 describe("extractVideoId", () => {
   it("standard watch URL", () => {
@@ -62,5 +66,13 @@ describe("isValidYouTubeUrl", () => {
 
   it("returns false for invalid input", () => {
     expect(isValidYouTubeUrl("not-a-url")).toBe(false);
+  });
+});
+
+describe("getThumbnailUrl", () => {
+  it("videoId로 mqdefault 썸네일 URL을 만든다", () => {
+    expect(getThumbnailUrl("dQw4w9WgXcQ")).toBe(
+      "https://img.youtube.com/vi/dQw4w9WgXcQ/mqdefault.jpg",
+    );
   });
 });

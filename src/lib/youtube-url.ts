@@ -39,3 +39,12 @@ export function extractVideoId(input: string): string | null {
 export function isValidYouTubeUrl(input: string): boolean {
   return extractVideoId(input) !== null;
 }
+
+/**
+ * videoId로 YouTube 썸네일 이미지 URL을 만든다.
+ *
+ * `mqdefault`(320x180, 16:9)는 모든 영상에 존재하는 기본 썸네일 크기다.
+ */
+export function getThumbnailUrl(videoId: string): string {
+  return `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+}
