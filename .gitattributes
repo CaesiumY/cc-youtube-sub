@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Binary assets — exclude from EOL conversion and diff
+*.png binary
+*.ico binary
+*.icns binary
+*.gif binary
+*.mp4 binary

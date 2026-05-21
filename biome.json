@@ -17,6 +17,7 @@
       "node_modules",
       "src/bindings.ts",
       ".omc",
+      ".claude",
       "*.json"
     ]
   }
