@@ -11,6 +11,7 @@ import {
   translateChunk,
 } from "../lib/tauri-commands";
 import type { SubtitleChunk, SubtitleLine } from "../lib/tauri-commands";
+import { useHistoryStore } from "../stores/history-store";
 import { getActiveModel, useSettingsStore } from "../stores/settings-store";
 import { useTranslationStore } from "../stores/translation-store";
 
@@ -199,6 +200,15 @@ export function useTranslationPipeline(videoId: string) {
       useTranslationStore.getState().setVideoInfo(videoInfo);
     }
   }, [videoInfo, videoId]);
+
+  // 자막 로드 성공 시 시청 히스토리에 기록.
+  // addEntry는 멱등 — videoInfo가 자막보다 늦게 도착하면 effect가 재실행되어
+  // 제목이 채워진다.
+  useEffect(() => {
+    if (chunks && chunks.length > 0) {
+      useHistoryStore.getState().addEntry(videoId, videoInfo?.title ?? "");
+    }
+  }, [chunks, videoInfo, videoId]);
 
   // cleanup on videoId change
   useEffect(() => {
