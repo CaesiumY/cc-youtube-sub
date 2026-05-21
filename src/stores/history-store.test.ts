@@ -59,6 +59,15 @@ describe("history-store addEntry", () => {
     expect(entries[0]?.title).toBe("Loaded Title");
   });
 
+  it("기존 제목이 있을 때 빈 title로 다시 추가해도 제목을 유지한다", () => {
+    const s = useHistoryStore.getState();
+    s.addEntry("videoxxxxxx", "원래 제목");
+    s.addEntry("videoxxxxxx", ""); // videoInfo 지연/실패 시 빈 제목으로 호출됨
+    const { entries } = useHistoryStore.getState();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.title).toBe("원래 제목");
+  });
+
   it("최근 20개만 유지하고 오래된 항목은 제거한다", () => {
     const s = useHistoryStore.getState();
     for (let i = 0; i < 21; i++) {

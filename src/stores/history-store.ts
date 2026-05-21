@@ -31,11 +31,17 @@ export const useHistoryStore = create<HistoryState>()(
     (set) => ({
       entries: [],
       // 같은 videoId를 제거한 뒤 맨 앞에 다시 넣어 중복 제거 + 재방문 시 상단
-      // 이동 + 제목 갱신을 동시에 처리하고, slice로 상한을 적용한다.
+      // 이동을 처리하고, slice로 상한을 적용한다. 새 title이 비어 있으면 기존
+      // 제목을 유지해 videoInfo 지연/실패 시 제목 손실을 막는다.
       addEntry: (videoId, title) =>
         set((state) => {
+          const existing = state.entries.find((e) => e.videoId === videoId);
           const withoutDup = state.entries.filter((e) => e.videoId !== videoId);
-          const entry: HistoryEntry = { videoId, title, addedAt: Date.now() };
+          const entry: HistoryEntry = {
+            videoId,
+            title: title || existing?.title || "",
+            addedAt: Date.now(),
+          };
           return { entries: [entry, ...withoutDup].slice(0, MAX_HISTORY) };
         }),
       removeEntry: (videoId) =>
